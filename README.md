@@ -20,7 +20,7 @@ Obsidian 1.5 or newer, desktop.
 ## Setting it up for a big shared drive
 
 1. **Make a small vault.** For example `Z:\Finance\_Obsidian`, or a folder on your own PC. Keep the vault itself small: notes, `.base` files and templates only.
-2. **Mount the folders you need.** Use **Settings → Folder Bridge Local → Add mount**, or right-click a folder in the file explorer and choose **Mount external folder here…**.
+2. **Mount the folders you need.** The quickest way is **Suggest from Bases** (see "Mounting the folders your Bases use" below). To add one by hand, use **Settings → Folder Bridge Local → Add mount**, or right-click a folder in the file explorer and choose **Mount external folder here…**.
    - **Real folder:** the folder on the drive, such as `Z:\Finance\Reports`.
    - **Vault folder:** where it appears in the vault, such as `Reports`.
 3. **Keep your old paths.** If your Bases, links or templates used to point at `Reports/…` when the whole drive was the vault, mount the folder at that same vault path and they keep working.
@@ -83,10 +83,22 @@ If Obsidian Sync is on, a mount is only activated when its vault folder is in Sy
 
 - **Attachments.** When you delete a note, Obsidian can also delete attachments that only that note links to (it asks first by default). It only knows about links inside your vault, so a spreadsheet that colleagues' notes also link to could be moved to the trash folder. Leave that confirmation on, and say no when the attachment is shared.
 - **Other plugins** that write files directly with their own code bypass Folder Bridge Local, including read-only mounts.
+- **Other plugins' extra files.** Some plugins save files next to your notes, for example Edit History's `.edtz` history files. A "Notes only" mount refuses those files. The plugin shows a notice once per mount the first time a save is refused, naming the file and how to allow it. Use **All files** for that mount, or, if the other plugin lets you choose where it keeps its files, pick a folder that isn't mounted.
 
 ## Security note for shared vaults
 
 Anyone who can change files in the vault's `.obsidian` folder can change this plugin (and every other plugin) and run code as you. If the vault sits on a shared drive, make sure only you can write to its `.obsidian` folder, or keep the vault on your own PC and only mount the shared folders.
+
+## Mounting the folders your Bases use
+
+**Suggest from Bases** (in the settings, next to **Add mount**, and in the command palette) reads your Bases, works out which folders their filters use, and mounts just those.
+
+1. **Where to look.** Choose **This vault** if you've already copied your `.base` files and dashboard notes into the small vault, or **A folder on disk** to search your old vault on the share directly.
+2. **Share folder.** The folder that was the root of your old vault, such as `Z:\` or `\\server\share`. A Base that filters on `Finance/Reports` is then mounted from `Z:\Finance\Reports` at the vault folder `Finance/Reports`, so the Base keeps working unchanged. If you already have mounts set up that way, the plugin fills this in for you.
+3. **Find Bases.** Searching a share only lists folder names unless you also turn on **Also look inside notes**, which finds Bases embedded in notes but reads every note.
+4. **Pick and add.** Each suggested folder shows its path on the share, which Bases use it, and any subfolders it already covers. The bar-chart button counts what's in it. Folders that don't exist on the share are flagged and left unticked. Choose **File types** and **Read-only** for the new mounts, then **Add**.
+
+The plugin understands filters such as `file.inFolder("…")`, `file.folder == "…"` and `file.path.startsWith("…")`, including inside **and**, **or** and **not**. Folders under **not** are treated as left out. Some Bases only filter by tag or property, or by the note they're embedded in (`this.file`). Their folders can't be read from the Base, so they're listed separately for you to mount by hand. Nothing on the share is changed by searching.
 
 ## What's in a mount? (making big mounts small)
 
@@ -101,6 +113,7 @@ This is the quick way to mount a whole drive and then trim it down to what you a
 ## Commands
 
 - Add mount
+- Suggest mounts from Bases
 - Rescan all mounts
 - What's in a mount? (size report)
 - Turn a mount on or off

@@ -8,7 +8,7 @@ import { IgnoreMatcher } from './IgnoreMatcher';
 import { ConflictMode, MountPoint, VaultStat } from './types';
 import { RecentTexts, TextFormat, decodeText, encodeText, isMergeableText, mergeText } from './textFiles';
 import { logger } from './logger';
-import { isVisibleFileInMount } from './mountFileFilter';
+import { EXECUTABLE_EXTENSIONS, getLowercaseExtension, isVisibleFileInMount } from './mountFileFilter';
 import {
 	realPathToResourceUrl,
 	ensureLongPathPrefix,
@@ -96,6 +96,8 @@ function stamp(date = new Date()): string {
 export class VirtualAdapter {
 	/** Mount IDs that already showed the read-only notice this session. */
 	private readOnlyNoticedMounts = new Set<string>();
+	/** "<mount id>:<reason>" pairs whose blocked-write notice was shown. */
+	private blockedNoticed = new Set<string>();
 	/** Diagnostics: how much mounted I/O this session did. */
 	readonly ioStats = { reads: 0, lists: 0, stats: 0, writes: 0 };
 	/** Mounts where a safety copy could not be made (warned once). */
@@ -128,6 +130,53 @@ export class VirtualAdapter {
 	/** Forget the one-shot read-only notice (call when the readOnly flag changes). */
 	clearReadOnlyNotice(mountId: string): void {
 		this.readOnlyNoticedMounts.delete(mountId);
+	}
+
+	/** Forget the one-shot blocked-write notices (call when a mount's rules change). */
+	clearBlockedNotices(mountId: string): void {
+		for (const key of [...this.blockedNoticed]) {
+			if (key.startsWith(mountId + ':')) this.blockedNoticed.delete(key);
+		}
+	}
+
+	/**
+	 * A write refused by the mount's Ignore or File types rules throws, and
+	 * Obsidian shows that to the user only when the user did it. Another
+	 * plugin saving in the background (an edit history, an export, a cache
+	 * file) would fail silently, so say it once per mount and reason.
+	 */
+	private warnBlocked(mount: MountPoint, reason: 'ignored' | 'type', normalizedPath: string): void {
+		const key = `${mount.id}:${reason}`;
+		if (this.blockedNoticed.has(key)) return;
+		this.blockedNoticed.add(key);
+		const name = normalizedPath.split('/').pop() ?? normalizedPath;
+		let why: string;
+		if (reason === 'ignored') {
+			why = 'it matches one of the mount\'s Ignore rules';
+		} else if (EXECUTABLE_EXTENSIONS.has(getLowercaseExtension(normalizedPath))) {
+			why = 'files that can run programs are never saved to a mount';
+		} else {
+			const shown = mount.visibleFileFilter === 'pdf-only' ? 'PDFs' : 'notes (Markdown, canvas, Bases)';
+			why = `the mount only shows ${shown}. To allow other files, edit the mount (right-click it → Edit mount…) and set File types to "All files"`;
+		}
+		new Notice(`Folder Bridge: "${name}" was not saved in "${mount.virtualPath}" because ${why}. If you didn't save it yourself, another plugin tried to.`, 15000);
+	}
+
+	/** The rule checks for a write, with the one-time notice when one refuses it. */
+	private assertWritable(normalizedPath: string, mount: MountPoint, verb: string, checkType = true): void {
+		try {
+			this.assertUsable(normalizedPath, mount, verb);
+		} catch (e) {
+			this.warnBlocked(mount, 'ignored', normalizedPath);
+			throw e;
+		}
+		if (!checkType) return;
+		try {
+			this.assertVisibleFile(normalizedPath, mount);
+		} catch (e) {
+			this.warnBlocked(mount, 'type', normalizedPath);
+			throw e;
+		}
 	}
 
 	/**
@@ -461,8 +510,7 @@ export class VirtualAdapter {
 	/** Shared guard for writes. Returns the real path, or null when the write was swallowed (read-only). */
 	private prepareWrite(normalizedPath: string, mount: MountPoint, verb: string): string | null {
 		if (mount.readOnly) { this.warnReadOnly(mount); return null; }
-		this.assertUsable(normalizedPath, mount, verb);
-		this.assertVisibleFile(normalizedPath, mount);
+		this.assertWritable(normalizedPath, mount, verb);
 		const realPath = this.toReal(normalizedPath, mount);
 		this.assertCreatableName(realPath);
 		return realPath;
@@ -737,7 +785,7 @@ export class VirtualAdapter {
 		const mount = this.pathMapper.getMountForPath(normalizedPath);
 		if (!mount) return this.orig().mkdir(normalizedPath);
 		if (mount.readOnly) { this.warnReadOnly(mount); return; }
-		this.assertUsable(normalizedPath, mount, 'create');
+		this.assertWritable(normalizedPath, mount, 'create', false);
 		const realPath = this.toReal(normalizedPath, mount);
 		this.assertCreatableName(realPath);
 		try {
@@ -991,7 +1039,7 @@ export class VirtualAdapter {
 		if (!srcMount && !dstMount) return this.orig().copy(normalizedPath, newNormalizedPath);
 		if (dstMount?.readOnly) { this.warnReadOnly(dstMount); return; }
 		if (srcMount) { this.assertUsable(normalizedPath, srcMount, 'copy'); this.assertVisibleFile(normalizedPath, srcMount); }
-		if (dstMount) { this.assertUsable(newNormalizedPath, dstMount, 'copy to'); this.assertVisibleFile(newNormalizedPath, dstMount); }
+		if (dstMount) this.assertWritable(newNormalizedPath, dstMount, 'copy to');
 
 		try {
 			if (srcMount && dstMount) {

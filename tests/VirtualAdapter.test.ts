@@ -8,6 +8,8 @@ import { SecurityManager } from '../src/SecurityManager';
 import { IgnoreMatcher } from '../src/IgnoreMatcher';
 import { VirtualAdapter, VirtualAdapterCallbacks } from '../src/VirtualAdapter';
 import type { MountPoint } from '../src/types';
+// The same module the source gets for 'obsidian' (vitest alias).
+import { Notice } from './__mocks__/obsidian';
 
 let root: string;
 let vaultDir: string;
@@ -201,6 +203,34 @@ describe('VirtualAdapter writes', () => {
 		await expect(fs.stat(path.join(vaultDir, '.trash'))).rejects.toMatchObject({ code: 'ENOENT' });
 		expect(callbacks.onDeleted).toHaveBeenCalledWith('Fin/Q1');
 		expect((await adapter.list('Fin')).folders).not.toContain('Fin/.folderbridge-trash');
+	});
+
+	it('tells the user once per mount and reason when the file-type rule blocks a write', async () => {
+		Notice.shown.length = 0;
+		const { adapter, mount } = make({ visibleFileFilter: 'markdown-only' });
+		await expect(adapter.writeBinary('Fin/Q1/summary.md.edtz', new ArrayBuffer(2))).rejects.toThrow(/hidden/);
+		await expect(adapter.write('Fin/Q1/data.csv', 'a,b')).rejects.toThrow(/hidden/);
+		expect(Notice.shown).toHaveLength(1);
+		expect(Notice.shown[0]).toMatch(/"summary\.md\.edtz" was not saved in "Fin".*All files/);
+		// Reads of hidden files stay quiet; the rule only matters for writes.
+		await expect(adapter.read('Fin/chart.png')).rejects.toThrow(/hidden/);
+		expect(Notice.shown).toHaveLength(1);
+		// Editing the mount resets it, so a still-wrong setting is reported again.
+		adapter.clearBlockedNotices(mount.id);
+		await expect(adapter.write('Fin/Q1/data.csv', 'a,b')).rejects.toThrow(/hidden/);
+		expect(Notice.shown).toHaveLength(2);
+		await expect(fs.stat(path.join(mountDir, 'Q1', 'data.csv'))).rejects.toMatchObject({ code: 'ENOENT' });
+	});
+
+	it('names the Ignore rule or the program-file rule when that is what blocked a write', async () => {
+		Notice.shown.length = 0;
+		const { adapter } = make();
+		await expect(adapter.write('Fin/Archive/new.md', 'x')).rejects.toThrow(/ignored/);
+		await expect(adapter.mkdir('Fin/Archive/Sub')).rejects.toThrow(/ignored/);
+		await expect(adapter.writeBinary('Fin/Q1/tool.exe', new ArrayBuffer(1))).rejects.toThrow(/hidden/);
+		expect(Notice.shown).toHaveLength(2);
+		expect(Notice.shown[0]).toMatch(/Ignore rules/);
+		expect(Notice.shown[1]).toMatch(/run programs/);
 	});
 
 	it('refuses to permanently delete a folder holding hidden files', async () => {

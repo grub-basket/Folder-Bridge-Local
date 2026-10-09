@@ -22,10 +22,11 @@ export class FolderBridgeSettingTab extends PluginSettingTab {
 			.setName('Mounts')
 			.setDesc('Folders from this PC or the network, shown inside this vault. Removing a mount never deletes files.')
 			.setHeading()
+			.addButton(b => b.setButtonText('Suggest from Bases').setTooltip('Find the folders your Bases use and mount just those').onClick(() => this.plugin.openBaseScan()))
 			.addButton(b => b.setButtonText('Add mount').setCta().onClick(() => this.plugin.openMountModal()));
 
 		if (settings.mountPoints.length === 0) {
-			containerEl.createEl('p', { cls: 'setting-item-description', text: 'No mounts yet. Use "add mount" or right-click a folder in the file explorer.' });
+			containerEl.createEl('p', { cls: 'setting-item-description', text: 'No mounts yet. Use "add mount", right-click a folder in the file explorer, or "suggest from Bases" to mount the folders your Bases use.' });
 		}
 		for (const mount of settings.mountPoints) this.renderMount(containerEl, mount);
 

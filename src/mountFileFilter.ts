@@ -16,7 +16,7 @@ export const EXECUTABLE_EXTENSIONS: ReadonlySet<string> = new Set([
 	'.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.hta', '.jar', '.reg', '.inf', '.application',
 ]);
 
-function getLowercaseExtension(filePath: string): string {
+export function getLowercaseExtension(filePath: string): string {
 	const leaf = filePath.split('/').pop() ?? filePath;
 	const dotIndex = leaf.lastIndexOf('.');
 	return dotIndex > 0 ? leaf.slice(dotIndex).toLowerCase() : '';

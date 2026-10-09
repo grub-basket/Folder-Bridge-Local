@@ -9,7 +9,7 @@ type OpenDialogResult = { canceled: boolean; filePaths: string[] };
 type ElectronDialog = { showOpenDialog(options: { properties: string[]; title: string; defaultPath?: string }): Promise<OpenDialogResult> };
 
 /** Native "choose folder" dialog, or null when unavailable/cancelled. */
-async function browseForFolder(title: string, defaultPath?: string): Promise<string | null> {
+export async function browseForFolder(title: string, defaultPath?: string): Promise<string | null> {
 	try {
 		const req = (globalThis as { require?: (id: string) => unknown }).require;
 		const electron = req?.('electron') as { remote?: { dialog?: ElectronDialog }; dialog?: ElectronDialog } | undefined;

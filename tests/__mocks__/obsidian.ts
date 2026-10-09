@@ -8,7 +8,9 @@ export function normalizePath(p: string): string {
 }
 
 export class Notice {
-	constructor(public message: string, public timeout?: number) { }
+	/** Every notice message shown, for tests to inspect (clear it yourself). */
+	static shown: string[] = [];
+	constructor(public message: string, public timeout?: number) { Notice.shown.push(message); }
 	setMessage(message: string): this { this.message = message; return this; }
 	hide(): void { }
 }

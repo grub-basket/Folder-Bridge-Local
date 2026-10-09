@@ -55,6 +55,9 @@ export interface FolderBridgeSettings {
 	 * Defaults cover Windows/Office noise files.
 	 */
 	globalIgnorePatterns: string[];
+	/** "Suggest mounts from Bases": where it last looked, and the share folder it used. */
+	lastBaseScanSource?: 'vault' | 'disk';
+	lastBaseScanRoot?: string;
 }
 
 export const DEFAULT_SETTINGS: FolderBridgeSettings = {
