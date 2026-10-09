@@ -223,7 +223,7 @@ export function invalidWindowsNameReason(name: string): string | null {
 	if (/^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/i.test(stem.trim())) {
 		return `"${name}" is a reserved device name on Windows (CON, NUL, COM1-9, LPT1-9, …).`;
 	}
-	// eslint-disable-next-line no-control-regex
+	// eslint-disable-next-line no-control-regex -- control characters are exactly what Windows forbids
 	if (/[<>:"|?*\u0000-\u001f]/.test(name)) {
 		return `"${name}" contains a character Windows does not allow in file names (< > : " | ? *).`;
 	}

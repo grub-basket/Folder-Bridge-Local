@@ -238,3 +238,26 @@ describe('text files', async () => {
 		expect(mergeText('a', 'a', 'b')).toEqual({ clean: true, merged: 'b' });
 	});
 });
+
+describe('conflict regions', async () => {
+	const { conflictRegions, wordDiff } = await import('../src/textFiles');
+
+	it('with a base, only overlapping edits clash', () => {
+		// Edits separated by an unchanged line merge; adjacent ones would count as one clash (standard diff3).
+		const r = conflictRegions('a\nb\nc\nd\ne', 'A\nb\nc\nd\nX', 'a\nb\nC\nd\nY');
+		expect(r.filter(x => x.kind === 'conflict')).toHaveLength(1);
+		expect(r[0]).toEqual({ kind: 'same', lines: ['A', 'b', 'C', 'd'] });
+		expect(r[1]).toEqual({ kind: 'conflict', mine: ['X'], theirs: ['Y'] });
+	});
+
+	it('without a base, every difference is a clash', () => {
+		const r = conflictRegions(undefined, 'a\nb\nc', 'a\nB\nc');
+		expect(r).toEqual([{ kind: 'same', lines: ['a'] }, { kind: 'conflict', mine: ['b'], theirs: ['B'] }, { kind: 'same', lines: ['c'] }]);
+	});
+
+	it('highlights changed words', () => {
+		const d = wordDiff('total: 100 USD', 'total: 150 USD');
+		expect(d.filter(p => p.side === 'a').map(p => p.text)).toEqual(['100']);
+		expect(d.filter(p => p.side === 'b').map(p => p.text)).toEqual(['150']);
+	});
+});

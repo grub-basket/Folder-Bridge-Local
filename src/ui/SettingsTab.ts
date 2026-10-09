@@ -101,7 +101,8 @@ export class FolderBridgeSettingTab extends PluginSettingTab {
 		const syncReason = this.plugin.syncBlocked.get(mount.id);
 		if (syncReason) row.descEl.createDiv({ cls: 'folderbridge-error', text: `Not mounted: ${syncReason}` });
 		if (health === 'unreachable') {
-			row.descEl.createDiv({ cls: 'folderbridge-error', text: `Offline: ${this.plugin.healthError.get(mount.id) ?? 'not reachable'}` });
+			const what = this.plugin.missing.has(mount.id) ? 'Folder not found' : 'Offline';
+			row.descEl.createDiv({ cls: 'folderbridge-error', text: `${what}: ${this.plugin.healthError.get(mount.id) ?? 'not reachable'}` });
 		}
 		row
 			.addToggle(t => t.setTooltip(mount.enabled ? 'Turn off' : 'Turn on').setValue(mount.enabled).onChange(async v => {

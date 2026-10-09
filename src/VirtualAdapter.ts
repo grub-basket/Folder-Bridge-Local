@@ -42,12 +42,18 @@ export interface VirtualAdapterCallbacks {
 	getKnownMtime(normalizedPath: string): number | undefined;
 	/** True while the health check considers this mount unreachable. */
 	isOffline(mountId: string): boolean;
+	/** Why it is unreachable, when more specific than "offline" (e.g. folder moved). */
+	unavailableReason?(mountId: string): string | undefined;
 	/** What to do when a note changed on disk since Obsidian last saw it. */
 	conflictMode(): ConflictMode;
 	/** A save merged in changes from disk: make Obsidian reload the note once its save finished. */
 	requestReload(normalizedPath: string): void;
 	/** True while a note is open in an editor (its merge base must not be evicted). */
 	isOpenInEditor?(normalizedPath: string): boolean;
+	/** A note Obsidian knows was saved, but it is gone from the drive (moved or deleted elsewhere). */
+	onVanished?(normalizedPath: string): void;
+	/** Both sides changed the same lines: offer the merge dialog (their version is already kept as a copy). */
+	onUnresolvedConflict?(conflict: { path: string; base?: string; mine: string; theirs: string; copyName: string }): void;
 }
 
 function notFound(realPath: string): NodeJS.ErrnoException {
@@ -147,7 +153,10 @@ export class VirtualAdapter {
 		// server ties up one of Node's four file-system threads for up to a
 		// minute, and Obsidian (metadata cache, Bases) would queue hundreds.
 		if (this.callbacks.isOffline(mount.id)) {
-			throw new Error(`Folder Bridge: "${mount.label || mount.virtualPath}" is offline. It reconnects automatically when the drive is back.`);
+			const reason = this.callbacks.unavailableReason?.(mount.id);
+			throw new Error(reason
+				? `Folder Bridge: "${mount.label || mount.virtualPath}": ${reason}`
+				: `Folder Bridge: "${mount.label || mount.virtualPath}" is offline. It reconnects automatically when the drive is back.`);
 		}
 		const realPath = this.pathMapper.toRealPath(normalizedPath, mount);
 		if (!this.security.isAllowed(realPath)) {
@@ -493,11 +502,13 @@ export class VirtualAdapter {
 		const mode = this.callbacks.conflictMode();
 		if (mode === 'overwrite') return { text: mine, reload: false };
 		const name = path.basename(realPath);
+		const base = this.recent.get(key);
+		let theirsText: string | undefined;
 		if (mode === 'merge' && mine !== null && isMergeableText(key)) {
-			const base = this.recent.get(key);
-			if (base !== undefined) {
-				const theirs = decodeText(await fs.promises.readFile(realPath));
-				if (!theirs.format.unsafe) {
+			const theirs = decodeText(await fs.promises.readFile(realPath));
+			if (!theirs.format.unsafe) {
+				theirsText = theirs.text;
+				if (base !== undefined) {
 					const result = mergeText(base, mine, theirs.text);
 					if (result.clean) {
 						new Notice(`Folder Bridge: "${name}" was changed on the drive while you edited it. Both sets of changes were merged.`, 8000);
@@ -510,7 +521,12 @@ export class VirtualAdapter {
 		const copyName = `${path.basename(realPath, ext)} (changed by someone else ${stamp()})${ext}`;
 		const trashDir = await this.trashDirFor(realPath, mount);
 		await fs.promises.copyFile(realPath, path.join(trashDir, copyName), fs.constants.COPYFILE_EXCL);
-		new Notice(`Folder Bridge: "${name}" was changed outside Obsidian and both of you edited the same lines. Their version was kept as "${copyName}" in ${TRASH_FOLDER}.`, 12000);
+		if (theirsText !== undefined && mine !== null && this.callbacks.onUnresolvedConflict) {
+			// Your text is saved now; the dialog lets you combine the two afterwards.
+			this.callbacks.onUnresolvedConflict({ path: key, base, mine, theirs: theirsText, copyName });
+		} else {
+			new Notice(`Folder Bridge: "${name}" was changed outside Obsidian and both of you edited the same lines. Their version was kept as "${copyName}" in ${TRASH_FOLDER}.`, 12000);
+		}
 		return { text: mine, reload: false };
 	}
 
@@ -525,15 +541,28 @@ export class VirtualAdapter {
 	 * - parent folders are only created for new files, so a save never
 	 *   recreates a folder a colleague just moved.
 	 */
-	private async saveFile(key: string, realPath: string, mount: MountPoint, content: string | Buffer): Promise<void> {
+	private async saveFile(key: string, realPath: string, mount: MountPoint, content: string | Buffer): Promise<'saved' | 'vanished'> {
 		const isNew = this.callbacks.getKnownMtime(key) === undefined;
 		if (isNew) {
 			await this.withParents(realPath, () => fs.promises.writeFile(realPath, content, { flag: 'wx' }));
-			return;
+			return 'saved';
 		}
 		let backup: string | null = null;
+		let current: fs.Stats | null = null;
 		try {
-			const current = await fs.promises.stat(realPath);
+			current = await fs.promises.stat(realPath);
+		} catch (e) {
+			if (!isMissing(e)) throw e;
+		}
+		if (!current) {
+			// Obsidian knows this note but it is gone from the drive: someone
+			// moved or deleted it while it was open. Recreating it would bring a
+			// deleted note back, or leave a duplicate next to the moved one; keep
+			// your text as a copy instead and let the vault catch up.
+			await this.keepUnsavedEdits(key, realPath, mount, content);
+			return 'vanished';
+		}
+		try {
 			if (current.isFile() && current.size > 0) {
 				const dir = path.join(await this.trashDirFor(realPath, mount), '.saving');
 				await fs.promises.mkdir(dir, { recursive: true });
@@ -558,6 +587,34 @@ export class VirtualAdapter {
 			throw new Error(`Folder Bridge: ${reason}`);
 		}
 		if (backup) await fs.promises.unlink(backup).catch(() => { /* harmless leftover */ });
+		return 'saved';
+	}
+
+	/** One "unsaved edits" copy per note per session, updated on every later save. */
+	private unsavedCopies = new Map<string, string>();
+
+	private async keepUnsavedEdits(key: string, realPath: string, mount: MountPoint, content: string | Buffer): Promise<void> {
+		let target = this.unsavedCopies.get(key);
+		if (!target) {
+			const ext = path.extname(realPath);
+			target = path.join(await this.trashDirFor(path.join(this.pathMapper.getEffectiveRealPath(mount), 'x'), mount), `${path.basename(realPath, ext)} (unsaved edits ${stamp()})${ext}`);
+			this.unsavedCopies.set(key, target);
+			new Notice(`Folder Bridge: "${path.basename(realPath)}" was moved or deleted on the drive while you were editing it. Your text was kept as "${path.basename(target)}" in ${TRASH_FOLDER}.`, 0);
+		}
+		await fs.promises.writeFile(target, content);
+		this.callbacks.onVanished?.(key);
+	}
+
+	/** Save some text as a copy in the trash folder next to a mounted note. Returns the copy's name. */
+	async keepTextCopy(normalizedPath: string, text: string, label: string): Promise<string> {
+		const mount = this.pathMapper.getMountForPath(normalizedPath);
+		if (!mount) throw new Error(`Folder Bridge: "${normalizedPath}" is not in a mount.`);
+		const realPath = this.toReal(normalizedPath, mount);
+		const ext = path.extname(realPath);
+		const copyName = `${path.basename(realPath, ext)} (${label.replace(/[<>:"/\\|?*]/g, '_')} ${stamp()})${ext}`;
+		const trashDir = await this.trashDirFor(realPath, mount);
+		await fs.promises.writeFile(path.join(trashDir, copyName), encodeText(text, this.formats.get(normalizePath(normalizedPath))), { flag: 'wx' });
+		return copyName;
 	}
 
 	private assertWritableText(key: string): TextFormat | undefined {
@@ -585,7 +642,7 @@ export class VirtualAdapter {
 			const resolved = await this.resolveConflict(key, realPath, mount, data);
 			text = resolved.text ?? data;
 			reload = resolved.reload;
-			await this.saveFile(key, realPath, mount, encodeText(text, format));
+			if (await this.saveFile(key, realPath, mount, encodeText(text, format)) === 'vanished') return;
 			await this.applyWriteOptions(realPath, options);
 		} catch (e) {
 			if ((e as Error).message?.startsWith('Folder Bridge:')) throw e;
@@ -607,7 +664,7 @@ export class VirtualAdapter {
 		this.ioStats.writes++;
 		try {
 			await this.resolveConflict(key, realPath, mount, null); // binary: copy or overwrite, never merge
-			await this.saveFile(key, realPath, mount, Buffer.from(data));
+			if (await this.saveFile(key, realPath, mount, Buffer.from(data)) === 'vanished') return;
 			await this.applyWriteOptions(realPath, options);
 		} catch (e) {
 			if ((e as Error).message?.startsWith('Folder Bridge:')) throw e;
@@ -650,10 +707,11 @@ export class VirtualAdapter {
 	async appendBinary(normalizedPath: string, data: ArrayBuffer, options?: DataWriteOptions): Promise<void> {
 		const mount = this.pathMapper.getMountForPath(normalizedPath);
 		if (!mount) {
-			// appendBinary exists from Obsidian 1.12.3; older versions never call it.
-			const original = this.orig() as DataAdapter & { appendBinary?(p: string, d: ArrayBuffer, o?: DataWriteOptions): Promise<void> };
-			if (!original.appendBinary) throw new Error('Folder Bridge: appendBinary is not available in this Obsidian version.');
-			return original.appendBinary(normalizedPath, data, options);
+			// appendBinary only exists from Obsidian 1.12.3 (minAppVersion is 1.5.0), so it
+			// is looked up as an optional method; older versions never call it.
+			const forward = (this.original as unknown as Record<string, unknown>)['appendBinary'];
+			if (typeof forward !== 'function') throw new Error('Folder Bridge: appendBinary is not available in this Obsidian version.');
+			return (forward as (p: string, d: ArrayBuffer, o?: DataWriteOptions) => Promise<void>).call(this.original, normalizedPath, data, options) as Promise<void>;
 		}
 		const realPath = this.prepareWrite(normalizedPath, mount, 'append to');
 		if (!realPath) return;
@@ -781,6 +839,13 @@ export class VirtualAdapter {
 		}
 		this.forget(normalizePath(normalizedPath));
 		await this.notifyDelete(normalizedPath);
+	}
+
+	/** Keep merge bases and formats when a note was moved outside Obsidian. */
+	pathRenamed(from: string, to: string): void {
+		this.recent.rename(from, to);
+		const format = this.formats.get(from);
+		if (format) { this.formats.delete(from); this.formats.set(to, format); }
 	}
 
 	/** Drop cached text/format for a path and everything below it. */

@@ -233,12 +233,12 @@ export async function syncTree(rootFolder: string, deps: TreeSyncDeps, options: 
  * a folder listing. A folder that appeared is indexed recursively, because
  * moving a folder in reports only the folder itself.
  */
-export async function syncPath(path: string, deps: TreeSyncDeps, options: TreeSyncOptions = {}): Promise<void> {
+export async function syncPath(path: string, deps: TreeSyncDeps, options: TreeSyncOptions = {}, preStat?: VaultStat | null): Promise<void> {
 	if (!deps.shouldContinue()) return;
 	let stat: VaultStat | null;
 	let k = deps.known(path);
 	try {
-		stat = await deps.stat(path);
+		stat = preStat !== undefined ? preStat : await deps.stat(path);
 		// Case-only rename on Windows: "reports" still stats fine after it
 		// became "Reports". When Obsidian knows a sibling differing only in
 		// case, ask which name really exists (one parent listing, rare) so

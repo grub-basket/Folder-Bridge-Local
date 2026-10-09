@@ -62,10 +62,13 @@ Always hidden, whatever the settings: program and shortcut files (`.exe`, `.bat`
 
 Several people can keep the same notes open in Obsidian. When a colleague saves a note you have open, Obsidian loads their version within a second or two.
 
-If you both save at almost the same moment, before Obsidian noticed their change, the plugin merges the two versions: changes to different lines are combined, and the editor shows the result. Only when you both changed the same lines does it keep their version as "… (changed by someone else …)" in `.folderbridge-trash`, and saves yours. You can change this in the settings.
+If you both save at almost the same moment, before Obsidian noticed their change, the plugin merges the two versions: changes to different lines are combined, and the editor shows the result.
+
+When you both changed the same lines, your version is saved, theirs is kept as "… (changed by someone else …)" in `.folderbridge-trash`, and a dialog opens to combine them. Each clash shows your lines and theirs side by side with the changed words highlighted. For each clash pick **Mine**, **Theirs**, **Both** (in either order) or **Edit…**, check the result at the bottom (you can edit it too), then **Apply**. Keyboard: ↑/↓ moves between clashes, 1–4 picks, Ctrl/Cmd+Enter applies. Closing the dialog keeps your version; nothing is lost either way. You can change this behaviour in the settings.
 
 This is a merge of saved versions, not live co-editing, so two people typing on the same line still collide.
 - **Offline drives.** If a drive disconnects, its files stay listed but can't be opened. The plugin checks every 30 seconds and reconnects by itself. The status bar shows how many mounts are offline.
+- **Moved folders.** Moving or renaming files and folders inside a mount in File Explorer is picked up as a move: notes you have open stay open under their new name. Links in other notes are not rewritten (only moves made inside Obsidian do that). If a note you are editing is moved or deleted on the drive before your save lands, your text is kept as "… (unsaved edits …)" in `.folderbridge-trash` instead of recreating the note. If the mounted folder itself is moved or renamed, the mount shows **not found**: use **Edit mount…** to point it to the new location.
 - **Startup.** The plugin remembers each mount's file list, so Obsidian doesn't re-read every note at launch. After startup it checks the drive for changes made while Obsidian was closed. The list is stored on your PC, in Obsidian's own app data folder, not in the vault.
 - **Moving files between a mount and the rest of the vault** isn't supported. Copy them instead.
 - **OneDrive / SharePoint "online-only" files** have to be downloaded first. Right-click them in File Explorer and choose **Always keep on this device**.

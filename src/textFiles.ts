@@ -1,4 +1,4 @@
-import { diff3Merge } from 'node-diff3';
+import { diff3Merge, diffComm } from 'node-diff3';
 
 /**
  * How a text file is stored on disk, so a save writes it back the same way.
@@ -116,4 +116,52 @@ export class RecentTexts {
 		this.delete(from);
 		this.set(to, value);
 	}
+}
+
+/** A stretch of a merged note: identical on both sides (or merged cleanly), or a clash. */
+export type MergeRegion =
+	| { kind: 'same'; lines: string[] }
+	| { kind: 'conflict'; mine: string[]; theirs: string[] };
+
+const lines = (s: string) => s.replace(/\r\n/g, '\n').split('\n');
+
+/**
+ * Split two versions into agreed and clashing stretches. With a `base`
+ * (the version both started from) non-overlapping edits merge on their own
+ * and only overlapping ones clash; without it, every difference is a clash.
+ */
+export function conflictRegions(base: string | undefined, mine: string, theirs: string): MergeRegion[] {
+	const out: MergeRegion[] = [];
+	const pushSame = (l: string[]) => {
+		const last = out[out.length - 1];
+		if (last?.kind === 'same') last.lines.push(...l);
+		else if (l.length) out.push({ kind: 'same', lines: [...l] });
+	};
+	if (base !== undefined) {
+		const regions = diff3Merge(lines(mine), lines(base), lines(theirs), { excludeFalseConflicts: true }) as Array<{ ok?: string[]; conflict?: { a: string[]; b: string[] } }>;
+		for (const r of regions) {
+			if (r.ok) pushSame(r.ok);
+			else if (r.conflict) out.push({ kind: 'conflict', mine: [...r.conflict.a], theirs: [...r.conflict.b] });
+		}
+		return out;
+	}
+	for (const r of diffComm(lines(mine), lines(theirs)) as Array<{ common?: string[]; buffer1?: string[]; buffer2?: string[] }>) {
+		if (r.common) pushSame(r.common);
+		else out.push({ kind: 'conflict', mine: [...(r.buffer1 ?? [])], theirs: [...(r.buffer2 ?? [])] });
+	}
+	return out;
+}
+
+/** Word-level diff of two strings, for highlighting what differs inside a clash. */
+export function wordDiff(a: string, b: string): { text: string; side: 'both' | 'a' | 'b' }[] {
+	const tokens = (s: string) => s.match(/\s+|[^\s]+/g) ?? [];
+	const out: { text: string; side: 'both' | 'a' | 'b' }[] = [];
+	for (const r of diffComm(tokens(a), tokens(b)) as Array<{ common?: string[]; buffer1?: string[]; buffer2?: string[] }>) {
+		if (r.common) out.push({ text: r.common.join(''), side: 'both' });
+		else {
+			if (r.buffer1?.length) out.push({ text: r.buffer1.join(''), side: 'a' });
+			if (r.buffer2?.length) out.push({ text: r.buffer2.join(''), side: 'b' });
+		}
+	}
+	return out;
 }

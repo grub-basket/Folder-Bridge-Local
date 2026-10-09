@@ -351,4 +351,21 @@ describe('data safety', () => {
 		offline = true;
 		expect(await adapter.exists('Fin/whatever.md')).toBe(true);
 	});
+
+	it('a note moved or deleted on the drive while open is not recreated; the text is kept as a copy', async () => {
+		const { adapter, callbacks } = make();
+		await learn('Fin/Q1/summary.md');
+		const vanished = vi.fn();
+		(callbacks as { onVanished?: (p: string) => void }).onVanished = vanished;
+		await fs.rename(real('Q1', 'summary.md'), real('Q1', 'moved.md'));
+		await adapter.write('Fin/Q1/summary.md', 'my latest text');
+		await expect(fs.stat(real('Q1', 'summary.md'))).rejects.toMatchObject({ code: 'ENOENT' });
+		const copies = (await fs.readdir(real('.folderbridge-trash'))).filter(n => n.includes('unsaved edits'));
+		expect(copies).toHaveLength(1);
+		expect(await fs.readFile(real('.folderbridge-trash', copies[0]), 'utf8')).toBe('my latest text');
+		await adapter.write('Fin/Q1/summary.md', 'even later text'); // same copy updated, no second file
+		expect((await fs.readdir(real('.folderbridge-trash'))).filter(n => n.includes('unsaved edits'))).toHaveLength(1);
+		expect(vanished).toHaveBeenCalledWith('Fin/Q1/summary.md');
+	});
 });
+
