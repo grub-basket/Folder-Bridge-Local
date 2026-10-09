@@ -4,7 +4,9 @@ Show folders from your PC, mapped drives (`Z:\Finance\Reports`) and Windows netw
 
 Obsidian has no way to exclude folders from a vault. If the vault is a whole department share, Obsidian walks every file on it at startup, and on a large network drive that can stop it from loading at all. With this plugin the vault stays small, and only the folders you actually use are brought in. Everything else on the share is never scanned.
 
-This is a trimmed fork of [Folder Bridge](https://github.com/tescolopio/Obsidian_FolderBridge) by Timmothy Escolopio. It keeps local and network folders only, and runs on desktop only. It is built for Windows 10 and 11, and also works on macOS and Linux with local folders and mounted shares (`/Volumes/…`, `/mnt/…`).
+**Optimized for Windows 10 and 11 and Windows network drives:** mapped drive letters, `\\server\share` paths, SMB shares that drop off the network, Office lock files, OneDrive "online-only" files, long Windows paths and case-insensitive names. It also runs on macOS and Linux with local folders and mounted shares (`/Volumes/…`, `/mnt/…`), but those are not the focus and Linux is untested.
+
+This is a trimmed fork of [Folder Bridge](https://github.com/tescolopio/Obsidian_FolderBridge) by Timmothy Escolopio. It keeps local and network folders only, and runs on desktop only.
 
 ## Install
 
