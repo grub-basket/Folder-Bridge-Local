@@ -1,0 +1,74 @@
+/* Folder Bridge Local */
+
+/* Mount root folders in the file explorer: a small marker after the name. */
+.nav-folder-title[data-folder-bridge] .tree-item-inner {
+	display: flex;
+	align-items: center;
+	flex: 1;
+}
+
+.nav-folder-title[data-folder-bridge] .tree-item-inner::after {
+	content: "↗";
+	margin-left: auto;
+	padding-left: 8px;
+	font-size: 0.75em;
+	color: var(--text-muted);
+	opacity: 0.5;
+}
+
+.nav-folder-title[data-folder-bridge="offline"] .tree-item-inner::after {
+	content: "⚠ offline";
+	color: var(--text-warning);
+	opacity: 0.9;
+}
+
+.nav-folder-title[data-folder-bridge]:hover .tree-item-inner::after {
+	opacity: 0.85;
+}
+
+/* Status bar */
+.folderbridge-status-warning {
+	color: var(--text-warning);
+}
+
+/* Modal and settings */
+.folderbridge-input-wide {
+	width: 100%;
+	min-width: 18em;
+}
+
+.folderbridge-modal textarea.folderbridge-input-wide {
+	font-family: var(--font-monospace);
+}
+
+.folderbridge-path-status {
+	margin: -0.5em 0 0.75em;
+	min-height: 1.2em;
+}
+
+.folderbridge-advanced {
+	margin: 0.5em 0 1em;
+}
+
+.folderbridge-advanced > summary {
+	cursor: pointer;
+	color: var(--text-muted);
+	padding: 0.25em 0;
+}
+
+.folderbridge-hidden {
+	display: none;
+}
+
+.folderbridge-error {
+	color: var(--text-error);
+	white-space: pre-wrap;
+}
+
+.folderbridge-error:empty {
+	display: none;
+}
+
+.folderbridge-mount-row .setting-item-description {
+	word-break: break-all;
+}

@@ -1,0 +1,10 @@
+{
+	"id": "folder-bridge-local",
+	"name": "Folder Bridge Local",
+	"version": "0.1.1",
+	"minAppVersion": "1.5.0",
+	"description": "Show folders from this computer, mapped drives and network shares inside a small vault, without making the whole share the vault.",
+	"author": "grub-basket",
+	"isDesktopOnly": true,
+	"authorUrl": "https://github.com/grub-basket"
+}
