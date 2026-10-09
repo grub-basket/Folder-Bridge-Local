@@ -46,6 +46,7 @@ var DEFAULT_SETTINGS = {
   mountPoints: [],
   mountRootDeletionBehavior: "ask",
   showStatusBar: true,
+  conflictMode: "merge",
   // Names starting with "." (.git, .DS_Store, …) are always hidden.
   globalIgnorePatterns: ["Thumbs.db", "desktop.ini", "~$*", "$RECYCLE.BIN", "System Volume Information"]
 };
@@ -537,6 +538,313 @@ var fs2 = __toESM(require("fs"));
 var path4 = __toESM(require("path"));
 var import_url2 = require("url");
 
+// node_modules/.pnpm/node-diff3@3.2.1/node_modules/node-diff3/dist/diff3.mjs
+function LCS(buffer1, buffer2) {
+  let equivalenceClasses = /* @__PURE__ */ Object.create(null);
+  for (let j = 0; j < buffer2.length; j++) {
+    const item = buffer2[j];
+    if (equivalenceClasses[item]) {
+      equivalenceClasses[item].push(j);
+    } else {
+      equivalenceClasses[item] = [j];
+    }
+  }
+  const NULLRESULT = { buffer1index: -1, buffer2index: -1, chain: null };
+  let candidates = [NULLRESULT];
+  for (let i = 0; i < buffer1.length; i++) {
+    const item = buffer1[i];
+    const buffer2indices = equivalenceClasses[item] || [];
+    let r = 0;
+    let c = candidates[0];
+    for (const j of buffer2indices) {
+      let s;
+      for (s = r; s < candidates.length; s++) {
+        if (candidates[s].buffer2index < j && (s === candidates.length - 1 || candidates[s + 1].buffer2index > j)) {
+          break;
+        }
+      }
+      if (s < candidates.length) {
+        const newCandidate = { buffer1index: i, buffer2index: j, chain: candidates[s] };
+        if (r === candidates.length) {
+          candidates.push(c);
+        } else {
+          candidates[r] = c;
+        }
+        r = s + 1;
+        c = newCandidate;
+        if (r === candidates.length) {
+          break;
+        }
+      }
+    }
+    candidates[r] = c;
+  }
+  return candidates[candidates.length - 1];
+}
+function diffIndices(buffer1, buffer2) {
+  const lcs = LCS(buffer1, buffer2);
+  let result = [];
+  let tail1 = buffer1.length;
+  let tail2 = buffer2.length;
+  for (let candidate = lcs; candidate !== null; candidate = candidate.chain) {
+    const mismatchLength1 = tail1 - candidate.buffer1index - 1;
+    const mismatchLength2 = tail2 - candidate.buffer2index - 1;
+    tail1 = candidate.buffer1index;
+    tail2 = candidate.buffer2index;
+    if (mismatchLength1 || mismatchLength2) {
+      result.push({
+        buffer1: [tail1 + 1, mismatchLength1],
+        buffer1Content: buffer1.slice(tail1 + 1, tail1 + 1 + mismatchLength1),
+        buffer2: [tail2 + 1, mismatchLength2],
+        buffer2Content: buffer2.slice(tail2 + 1, tail2 + 1 + mismatchLength2)
+      });
+    }
+  }
+  result.reverse();
+  return result;
+}
+function diff3MergeRegions(a, o, b) {
+  let hunks = [];
+  function addHunk(h, ab) {
+    hunks.push({
+      ab,
+      oStart: h.buffer1[0],
+      oLength: h.buffer1[1],
+      abStart: h.buffer2[0],
+      abLength: h.buffer2[1]
+    });
+  }
+  diffIndices(o, a).forEach((item) => addHunk(item, "a"));
+  diffIndices(o, b).forEach((item) => addHunk(item, "b"));
+  hunks.sort((x, y) => x.oStart - y.oStart);
+  let results = [];
+  let currOffset = 0;
+  function advanceTo(endOffset) {
+    if (endOffset > currOffset) {
+      results.push({
+        stable: true,
+        buffer: "o",
+        bufferStart: currOffset,
+        bufferLength: endOffset - currOffset,
+        bufferContent: o.slice(currOffset, endOffset)
+      });
+      currOffset = endOffset;
+    }
+  }
+  while (hunks.length) {
+    let hunk = hunks.shift();
+    let regionStart = hunk.oStart;
+    let regionEnd = hunk.oStart + hunk.oLength;
+    let regionHunks = [hunk];
+    advanceTo(regionStart);
+    while (hunks.length) {
+      const nextHunk = hunks[0];
+      const nextHunkStart = nextHunk.oStart;
+      if (nextHunkStart > regionEnd)
+        break;
+      regionEnd = Math.max(regionEnd, nextHunkStart + nextHunk.oLength);
+      regionHunks.push(hunks.shift());
+    }
+    if (regionHunks.length === 1) {
+      if (hunk.abLength > 0) {
+        const buffer = hunk.ab === "a" ? a : b;
+        results.push({
+          stable: true,
+          buffer: hunk.ab,
+          bufferStart: hunk.abStart,
+          bufferLength: hunk.abLength,
+          bufferContent: buffer.slice(hunk.abStart, hunk.abStart + hunk.abLength)
+        });
+      }
+    } else {
+      let bounds = {
+        a: [a.length, -1, o.length, -1],
+        b: [b.length, -1, o.length, -1]
+      };
+      while (regionHunks.length) {
+        hunk = regionHunks.shift();
+        const oStart = hunk.oStart;
+        const oEnd = oStart + hunk.oLength;
+        const abStart = hunk.abStart;
+        const abEnd = abStart + hunk.abLength;
+        let b2 = bounds[hunk.ab];
+        b2[0] = Math.min(abStart, b2[0]);
+        b2[1] = Math.max(abEnd, b2[1]);
+        b2[2] = Math.min(oStart, b2[2]);
+        b2[3] = Math.max(oEnd, b2[3]);
+      }
+      const aStart = bounds.a[0] + (regionStart - bounds.a[2]);
+      const aEnd = bounds.a[1] + (regionEnd - bounds.a[3]);
+      const bStart = bounds.b[0] + (regionStart - bounds.b[2]);
+      const bEnd = bounds.b[1] + (regionEnd - bounds.b[3]);
+      let result = {
+        stable: false,
+        aStart,
+        aLength: aEnd - aStart,
+        aContent: a.slice(aStart, aEnd),
+        oStart: regionStart,
+        oLength: regionEnd - regionStart,
+        oContent: o.slice(regionStart, regionEnd),
+        bStart,
+        bLength: bEnd - bStart,
+        bContent: b.slice(bStart, bEnd)
+      };
+      results.push(result);
+    }
+    currOffset = regionEnd;
+  }
+  advanceTo(o.length);
+  return results;
+}
+function diff3Merge(a, o, b, options) {
+  let defaults = {
+    excludeFalseConflicts: true,
+    stringSeparator: /\s+/
+  };
+  options = Object.assign(defaults, options);
+  if (typeof a === "string")
+    a = a.split(options.stringSeparator);
+  if (typeof o === "string")
+    o = o.split(options.stringSeparator);
+  if (typeof b === "string")
+    b = b.split(options.stringSeparator);
+  let results = [];
+  const regions = diff3MergeRegions(a, o, b);
+  let okBuffer = [];
+  function flushOk() {
+    if (okBuffer.length) {
+      results.push({ ok: okBuffer });
+    }
+    okBuffer = [];
+  }
+  function isFalseConflict(a2, b2) {
+    if (a2.length !== b2.length)
+      return false;
+    for (let i = 0; i < a2.length; i++) {
+      if (a2[i] !== b2[i])
+        return false;
+    }
+    return true;
+  }
+  regions.forEach((region) => {
+    if (region.stable) {
+      okBuffer.push(...region.bufferContent);
+    } else {
+      if (options.excludeFalseConflicts && isFalseConflict(region.aContent, region.bContent)) {
+        okBuffer.push(...region.aContent);
+      } else {
+        flushOk();
+        results.push({
+          conflict: {
+            a: region.aContent,
+            aIndex: region.aStart,
+            o: region.oContent,
+            oIndex: region.oStart,
+            b: region.bContent,
+            bIndex: region.bStart
+          }
+        });
+      }
+    }
+  });
+  flushOk();
+  return results;
+}
+
+// src/textFiles.ts
+var utf8 = new TextDecoder("utf-8", { fatal: true });
+function decodeText(buf) {
+  const format = { crlf: false, bom: false, unsafe: false };
+  let text;
+  if (buf[0] === 255 && buf[1] === 254) {
+    format.unsafe = true;
+    text = new TextDecoder("utf-16le").decode(buf.subarray(2));
+  } else if (buf[0] === 254 && buf[1] === 255) {
+    format.unsafe = true;
+    text = new TextDecoder("utf-16be").decode(buf.subarray(2));
+  } else {
+    let body = buf;
+    if (buf[0] === 239 && buf[1] === 187 && buf[2] === 191) {
+      format.bom = true;
+      body = buf.subarray(3);
+    }
+    try {
+      text = utf8.decode(body);
+    } catch {
+      format.unsafe = true;
+      text = new TextDecoder("windows-1252").decode(body);
+    }
+  }
+  format.crlf = text.includes("\r\n") && !/(^|[^\r])\n/.test(text);
+  return { text, format };
+}
+function encodeText(text, format) {
+  let out = text;
+  if (format?.crlf) out = out.replace(/\r?\n/g, "\r\n");
+  if (format?.bom) out = "\uFEFF" + out;
+  return out;
+}
+function mergeText(base, mine, theirs) {
+  const norm = (s) => s.replace(/\r\n/g, "\n").split("\n");
+  const regions = diff3Merge(norm(mine), norm(base), norm(theirs), { excludeFalseConflicts: true });
+  const lines = [];
+  for (const region of regions) {
+    if (region.conflict) return { clean: false, merged: "" };
+    if (region.ok) lines.push(...region.ok);
+  }
+  return { clean: true, merged: lines.join("\n") };
+}
+function isMergeableText(path5) {
+  return /\.(md|mdx|canvas|base|txt|csv|json)$/i.test(path5);
+}
+var RecentTexts = class {
+  /** `isPinned`: entries for notes open in an editor are never evicted (they are the merge base). */
+  constructor(isPinned = () => false, maxEntries = 200, maxBytes = 8 * 1024 * 1024) {
+    this.isPinned = isPinned;
+    this.maxEntries = maxEntries;
+    this.maxBytes = maxBytes;
+    this.map = /* @__PURE__ */ new Map();
+    this.bytes = 0;
+  }
+  get(path5) {
+    const value = this.map.get(path5);
+    if (value !== void 0) {
+      this.map.delete(path5);
+      this.map.set(path5, value);
+    }
+    return value;
+  }
+  set(path5, text) {
+    if (text.length > this.maxBytes / 4) {
+      this.delete(path5);
+      return;
+    }
+    this.delete(path5);
+    this.map.set(path5, text);
+    this.bytes += text.length;
+    let guard = this.map.size;
+    while ((this.map.size > this.maxEntries || this.bytes > this.maxBytes) && guard-- > 0) {
+      const oldest = this.map.keys().next().value;
+      const value = this.map.get(oldest);
+      this.map.delete(oldest);
+      if (this.isPinned(oldest)) this.map.set(oldest, value);
+      else this.bytes -= value.length;
+    }
+  }
+  delete(path5) {
+    const old = this.map.get(path5);
+    if (old === void 0) return;
+    this.bytes -= old.length;
+    this.map.delete(path5);
+  }
+  rename(from, to) {
+    const value = this.map.get(from);
+    if (value === void 0) return;
+    this.delete(from);
+    this.set(to, value);
+  }
+};
+
 // src/logger.ts
 var PREFIX = "[Folder Bridge]";
 var logger = {
@@ -546,7 +854,7 @@ var logger = {
 };
 
 // src/mountFileFilter.ts
-var MARKDOWN_EXTENSIONS = /* @__PURE__ */ new Set([".md", ".canvas", ".mdx"]);
+var MARKDOWN_EXTENSIONS = /* @__PURE__ */ new Set([".md", ".canvas", ".mdx", ".base"]);
 var PDF_EXTENSIONS = /* @__PURE__ */ new Set([".pdf"]);
 var EXECUTABLE_EXTENSIONS = /* @__PURE__ */ new Set([
   ".exe",
@@ -629,6 +937,12 @@ var VirtualAdapter = class {
     this.readOnlyNoticedMounts = /* @__PURE__ */ new Set();
     /** Diagnostics: how much mounted I/O this session did. */
     this.ioStats = { reads: 0, lists: 0, stats: 0, writes: 0 };
+    /** Mounts where a safety copy could not be made (warned once). */
+    this.backupWarned = /* @__PURE__ */ new Set();
+    /** How each text file read so far is stored (line endings, BOM, encoding). */
+    this.formats = /* @__PURE__ */ new Map();
+    /** Last text Obsidian read or wrote per note: the common base for a merge. */
+    this.recent = new RecentTexts((p) => this.callbacks.isOpenInEditor?.(p) ?? false);
   }
   orig() {
     return this.original;
@@ -748,7 +1062,11 @@ var VirtualAdapter = class {
   }
   async exists(normalizedPath, sensitive) {
     if (this.pathMapper.getMountForPath(normalizedPath)) {
-      return await this.stat(normalizedPath) !== null;
+      try {
+        return await this.statMounted(normalizedPath) !== null;
+      } catch {
+        return true;
+      }
     }
     if (this.pathMapper.hasMountsUnder(normalizedPath)) {
       if (await this.orig().exists(normalizedPath, sensitive)) return true;
@@ -879,11 +1197,17 @@ var VirtualAdapter = class {
     this.assertVisibleFile(normalizedPath, mount);
     const realPath = this.toReal(normalizedPath, mount);
     this.ioStats.reads++;
+    let buf;
     try {
-      return await fs2.promises.readFile(realPath, "utf8");
+      buf = await fs2.promises.readFile(realPath);
     } catch (e) {
       throw await this.readError(e, realPath, "read");
     }
+    const key = (0, import_obsidian4.normalizePath)(normalizedPath);
+    const { text, format } = decodeText(buf);
+    this.formats.set(key, format);
+    this.recent.set(key, text);
+    return text;
   }
   async cachedRead(normalizedPath) {
     if (this.pathMapper.getMountForPath(normalizedPath)) return this.read(normalizedPath);
@@ -941,57 +1265,144 @@ var VirtualAdapter = class {
     }
   }
   /**
-   * Before overwriting a file Obsidian knows, check that nobody changed it
-   * on the share since (a colleague's save the watcher has not reported, or
-   * that a share never reports). If they did, keep their version as a
-   * conflict copy in the trash folder instead of silently replacing it.
+   * A note changed on disk since Obsidian last saw it (a colleague's save
+   * the watcher has not reported yet, or a share that never reports).
+   * Depending on the conflict setting:
+   * - merge: combine both versions (three-way merge against the last text
+   *   Obsidian loaded); Obsidian reloads the result after its save.
+   * - copy (also the fallback when a merge is impossible): keep their
+   *   version as a copy in the trash folder, then save ours.
+   * - overwrite: Obsidian's normal behaviour, last save wins.
    */
-  async protectOtherEdits(normalizedPath, realPath, mount) {
-    const known = this.callbacks.getKnownMtime((0, import_obsidian4.normalizePath)(normalizedPath));
-    if (known === void 0) return;
+  async resolveConflict(key, realPath, mount, mine) {
+    const known = this.callbacks.getKnownMtime(key);
+    if (known === void 0) return { text: mine, reload: false };
     let onDisk;
     try {
       onDisk = await fs2.promises.stat(realPath);
     } catch {
+      return { text: mine, reload: false };
+    }
+    if (!onDisk.isFile() || Math.round(onDisk.mtimeMs) === known) return { text: mine, reload: false };
+    const mode = this.callbacks.conflictMode();
+    if (mode === "overwrite") return { text: mine, reload: false };
+    const name = path4.basename(realPath);
+    if (mode === "merge" && mine !== null && isMergeableText(key)) {
+      const base = this.recent.get(key);
+      if (base !== void 0) {
+        const theirs = decodeText(await fs2.promises.readFile(realPath));
+        if (!theirs.format.unsafe) {
+          const result = mergeText(base, mine, theirs.text);
+          if (result.clean) {
+            new import_obsidian4.Notice(`Folder Bridge: "${name}" was changed on the drive while you edited it. Both sets of changes were merged.`, 8e3);
+            return { text: result.merged, reload: true };
+          }
+        }
+      }
+    }
+    const ext = path4.extname(realPath);
+    const copyName = `${path4.basename(realPath, ext)} (changed by someone else ${stamp()})${ext}`;
+    const trashDir = await this.trashDirFor(realPath, mount);
+    await fs2.promises.copyFile(realPath, path4.join(trashDir, copyName), fs2.constants.COPYFILE_EXCL);
+    new import_obsidian4.Notice(`Folder Bridge: "${name}" was changed outside Obsidian and both of you edited the same lines. Their version was kept as "${copyName}" in ${TRASH_FOLDER}.`, 12e3);
+    return { text: mine, reload: false };
+  }
+  /**
+   * Write a file without ever losing its current content:
+   * - a file Obsidian does not know yet is created with "wx", so an existing
+   *   file on the share is never replaced by vault.create();
+   * - an existing file is first copied aside (same share, hidden folder);
+   *   writeFile empties the file before writing, so a network drop or a
+   *   full disk mid-save would otherwise leave it empty or cut short. The
+   *   copy is removed once the new content is fully written.
+   * - parent folders are only created for new files, so a save never
+   *   recreates a folder a colleague just moved.
+   */
+  async saveFile(key, realPath, mount, content) {
+    const isNew = this.callbacks.getKnownMtime(key) === void 0;
+    if (isNew) {
+      await this.withParents(realPath, () => fs2.promises.writeFile(realPath, content, { flag: "wx" }));
       return;
     }
-    if (!onDisk.isFile() || Math.round(onDisk.mtimeMs) === known) return;
-    const ext = path4.extname(realPath);
-    const name = `${path4.basename(realPath, ext)} (changed by someone else ${stamp()})${ext}`;
-    const trashDir = await this.trashDirFor(realPath, mount);
-    await fs2.promises.copyFile(realPath, path4.join(trashDir, name), fs2.constants.COPYFILE_EXCL);
-    new import_obsidian4.Notice(`Folder Bridge: "${path4.basename(realPath)}" was changed outside Obsidian. Their version was kept as "${name}" in ${TRASH_FOLDER}.`, 12e3);
+    let backup = null;
+    try {
+      const current = await fs2.promises.stat(realPath);
+      if (current.isFile() && current.size > 0) {
+        const dir = path4.join(await this.trashDirFor(realPath, mount), ".saving");
+        await fs2.promises.mkdir(dir, { recursive: true });
+        const candidate = path4.join(dir, `${stamp()} ${Math.random().toString(36).slice(2, 8)} ${path4.basename(realPath)}`);
+        await fs2.promises.copyFile(realPath, candidate, fs2.constants.COPYFILE_EXCL);
+        backup = candidate;
+      }
+    } catch (e) {
+      if (!isMissing(e) && !this.backupWarned.has(mount.id)) {
+        this.backupWarned.add(mount.id);
+        logger.warn(`No safety copy possible on "${mount.virtualPath}" (${e.message}); saving without one.`);
+      }
+    }
+    try {
+      await fs2.promises.writeFile(realPath, content);
+    } catch (e) {
+      const reason = translateFsError(e, "save");
+      if (backup) throw new Error(`Folder Bridge: "${path4.basename(realPath)}" was not saved: ${reason} The previous version is kept at "${stripLongPathPrefix(backup)}".`);
+      if (isMissing(e)) throw new Error(`Folder Bridge: "${path4.basename(realPath)}" was not saved: its folder no longer exists (moved or deleted on the drive?).`);
+      throw new Error(`Folder Bridge: ${reason}`);
+    }
+    if (backup) await fs2.promises.unlink(backup).catch(() => {
+    });
+  }
+  assertWritableText(key) {
+    const format = this.formats.get(key);
+    if (format?.unsafe) {
+      throw new Error(
+        `Folder Bridge: "${key.split("/").pop()}" is not stored as UTF-8 text (it uses an older Windows or UTF-16 encoding). Saving it from Obsidian would damage characters such as \xA3 \u20AC \xE9, so it was not saved. Edit it in the program that created it.`
+      );
+    }
+    return format;
   }
   async write(normalizedPath, data, options) {
     const mount = this.pathMapper.getMountForPath(normalizedPath);
     if (!mount) return this.orig().write(normalizedPath, data, options);
     const realPath = this.prepareWrite(normalizedPath, mount, "write to");
     if (!realPath) return;
+    const key = (0, import_obsidian4.normalizePath)(normalizedPath);
+    const format = this.assertWritableText(key);
     this.ioStats.writes++;
+    let text = data;
+    let reload = false;
     try {
-      await this.protectOtherEdits(normalizedPath, realPath, mount);
-      await this.withParents(realPath, () => fs2.promises.writeFile(realPath, data, "utf8"));
+      const resolved = await this.resolveConflict(key, realPath, mount, data);
+      text = resolved.text ?? data;
+      reload = resolved.reload;
+      await this.saveFile(key, realPath, mount, encodeText(text, format));
       await this.applyWriteOptions(realPath, options);
     } catch (e) {
+      if (e.message?.startsWith("Folder Bridge:")) throw e;
       const message = `Folder Bridge: ${translateFsError(e, "write")}`;
       logger.error(`write failed for "${realPath}":`, e);
       throw new Error(message);
     }
+    this.recent.set(key, text);
     await this.notifyWritten(normalizedPath);
+    if (reload) this.callbacks.requestReload(key);
   }
   async writeBinary(normalizedPath, data, options) {
     const mount = this.pathMapper.getMountForPath(normalizedPath);
     if (!mount) return this.orig().writeBinary(normalizedPath, data, options);
     const realPath = this.prepareWrite(normalizedPath, mount, "write to");
     if (!realPath) return;
+    const key = (0, import_obsidian4.normalizePath)(normalizedPath);
     this.ioStats.writes++;
     try {
-      await this.protectOtherEdits(normalizedPath, realPath, mount);
-      await this.withParents(realPath, () => fs2.promises.writeFile(realPath, Buffer.from(data)));
+      await this.resolveConflict(key, realPath, mount, null);
+      await this.saveFile(key, realPath, mount, Buffer.from(data));
       await this.applyWriteOptions(realPath, options);
     } catch (e) {
+      if (e.message?.startsWith("Folder Bridge:")) throw e;
       throw new Error(`Folder Bridge: ${translateFsError(e, "writeBinary")}`);
     }
+    this.recent.delete(key);
+    this.formats.delete(key);
     await this.notifyWritten(normalizedPath);
   }
   /** Honour DataWriteOptions.mtime like Obsidian's own adapter (best effort). */
@@ -1008,12 +1419,15 @@ var VirtualAdapter = class {
     if (!mount) return this.orig().append(normalizedPath, data, options);
     const realPath = this.prepareWrite(normalizedPath, mount, "append to");
     if (!realPath) return;
+    const key = (0, import_obsidian4.normalizePath)(normalizedPath);
+    const format = this.assertWritableText(key);
     this.ioStats.writes++;
     try {
-      await fs2.promises.appendFile(realPath, data, "utf8");
+      await fs2.promises.appendFile(realPath, encodeText(data, format ? { ...format, bom: false } : void 0), "utf8");
     } catch (e) {
       throw new Error(`Folder Bridge: ${translateFsError(e, "append")}`);
     }
+    this.recent.delete(key);
     await this.notifyWritten(normalizedPath);
   }
   async appendBinary(normalizedPath, data, options) {
@@ -1125,6 +1539,14 @@ var VirtualAdapter = class {
     }
     this.assertUsable(normalizedPath, mount, "trash");
     const realPath = this.toReal(normalizedPath, mount);
+    let isFolder = false;
+    try {
+      isFolder = (await fs2.promises.stat(realPath)).isDirectory();
+    } catch {
+    }
+    if (isFolder && await this.countHidden(realPath, (0, import_obsidian4.normalizePath)(normalizedPath), mount) > 0) {
+      throw new Error(`Folder Bridge: "${path4.basename(realPath)}" contains files that are hidden in Obsidian, so it was not moved to the trash. Delete it in File Explorer if you are sure.`);
+    }
     const trashDir = await this.trashDirFor(realPath, mount);
     const destination = path4.join(trashDir, `${stamp()} ${path4.basename(realPath)}`);
     let target = destination;
@@ -1141,7 +1563,14 @@ var VirtualAdapter = class {
     } catch (e) {
       throw new Error(`Folder Bridge: ${translateFsError(e, "trash")} Nothing was deleted.`);
     }
+    this.forget((0, import_obsidian4.normalizePath)(normalizedPath));
     await this.notifyDelete(normalizedPath);
+  }
+  /** Drop cached text/format for a path and everything below it. */
+  forget(key) {
+    this.recent.delete(key);
+    this.formats.delete(key);
+    for (const k of [...this.formats.keys()]) if (k.startsWith(key + "/")) this.formats.delete(k);
   }
   /**
    * Count entries under a real folder that Obsidian does not show (ignored,
@@ -1166,11 +1595,19 @@ var VirtualAdapter = class {
     await walk(realDir, virtualDir);
     return hidden;
   }
+  /**
+   * Permanent deletes never happen on a mount: network shares have no
+   * Recycle Bin, and Obsidian calls these when its "Deleted files" setting
+   * is "Permanently delete" (or a sync tool applies remote deletions). They
+   * go to the trash folder on the share instead, with the same checks.
+   * An empty-folder rmdir (recursive=false) is safe and stays a real rmdir.
+   */
   async rmdir(normalizedPath, recursive) {
     const rootMount = this.pathMapper.getMountByVirtualPath(normalizedPath);
     if (rootMount) return this.unmountInsteadOfDelete(rootMount);
     const mount = this.pathMapper.getMountForPath(normalizedPath);
     if (!mount) return this.orig().rmdir(normalizedPath, recursive);
+    if (recursive) return this.trashLocal(normalizedPath);
     if (mount.readOnly) {
       this.warnReadOnly(mount);
       return;
@@ -1178,16 +1615,8 @@ var VirtualAdapter = class {
     this.assertUsable(normalizedPath, mount, "remove");
     const realPath = this.toReal(normalizedPath, mount);
     try {
-      if (recursive) {
-        if (await this.countHidden(realPath, (0, import_obsidian4.normalizePath)(normalizedPath), mount) > 0) {
-          throw new Error(`Folder Bridge: "${path4.basename(realPath)}" contains files that are hidden in Obsidian, so it was not deleted. Delete it in File Explorer if you are sure.`);
-        }
-        await fs2.promises.rm(realPath, { recursive: true });
-      } else {
-        await fs2.promises.rmdir(realPath);
-      }
+      await fs2.promises.rmdir(realPath);
     } catch (e) {
-      if (e.message?.startsWith("Folder Bridge:")) throw e;
       throw new Error(`Folder Bridge: ${translateFsError(e, "rmdir")}`);
     }
     await this.notifyDelete(normalizedPath);
@@ -1195,20 +1624,8 @@ var VirtualAdapter = class {
   async remove(normalizedPath) {
     const rootMount = this.pathMapper.getMountByVirtualPath(normalizedPath);
     if (rootMount) return this.unmountInsteadOfDelete(rootMount);
-    const mount = this.pathMapper.getMountForPath(normalizedPath);
-    if (!mount) return this.orig().remove(normalizedPath);
-    if (mount.readOnly) {
-      this.warnReadOnly(mount);
-      return;
-    }
-    this.assertUsable(normalizedPath, mount, "remove");
-    const realPath = this.toReal(normalizedPath, mount);
-    try {
-      await fs2.promises.unlink(realPath);
-    } catch (e) {
-      if (!isMissing(e)) throw new Error(`Folder Bridge: ${translateFsError(e, "remove")}`);
-    }
-    await this.notifyDelete(normalizedPath);
+    if (!this.pathMapper.getMountForPath(normalizedPath)) return this.orig().remove(normalizedPath);
+    return this.trashLocal(normalizedPath);
   }
   // ------------------------------------------------------------------
   // rename / copy
@@ -1216,8 +1633,7 @@ var VirtualAdapter = class {
   async rename(normalizedPath, newNormalizedPath) {
     const rootMount = this.pathMapper.getMountByVirtualPath(normalizedPath);
     if (rootMount) {
-      await this.callbacks.onMountRootMove(rootMount, newNormalizedPath);
-      return;
+      throw new Error(`Folder Bridge: "${rootMount.virtualPath}" is a mounted folder. To move it inside the vault, edit the mount (right-click \u2192 Edit mount\u2026) and change its vault folder.`);
     }
     const srcMount = this.pathMapper.getMountForPath(normalizedPath);
     const dstMount = this.pathMapper.getMountForPath(newNormalizedPath);
@@ -1265,6 +1681,10 @@ var VirtualAdapter = class {
     } catch (e) {
       throw new Error(`Folder Bridge: ${translateFsError(e, "rename")}`);
     }
+    this.recent.rename((0, import_obsidian4.normalizePath)(normalizedPath), (0, import_obsidian4.normalizePath)(newNormalizedPath));
+    const format = this.formats.get((0, import_obsidian4.normalizePath)(normalizedPath));
+    this.forget((0, import_obsidian4.normalizePath)(normalizedPath));
+    if (format) this.formats.set((0, import_obsidian4.normalizePath)(newNormalizedPath), format);
     try {
       this.callbacks.onRenamed((0, import_obsidian4.normalizePath)(normalizedPath), (0, import_obsidian4.normalizePath)(newNormalizedPath));
     } catch (e) {
@@ -1861,7 +2281,7 @@ var MountModal = class extends import_obsidian7.Modal {
     new import_obsidian7.Setting(contentEl).setName("Read-only").setDesc("Block every change from Obsidian (edits, renames, deletes). Recommended for shared finance folders you only report from.").addToggle((t) => t.setValue(this.draft.readOnly).onChange((v) => {
       this.draft.readOnly = v;
     }));
-    new import_obsidian7.Setting(contentEl).setName("File types").setDesc("Show only some files. Markdown only keeps big shares fast when you just need notes and Bases.").addDropdown((d) => d.addOption("all", "All files").addOption("markdown-only", "Markdown and canvas only").addOption("pdf-only", "PDF only").setValue(this.draft.visibleFileFilter ?? "all").onChange((v) => {
+    new import_obsidian7.Setting(contentEl).setName("File types").setDesc('Show only some files. "Notes only" keeps big shares fast when you just need notes and Bases.').addDropdown((d) => d.addOption("all", "All files").addOption("markdown-only", "Notes only (Markdown, canvas, Bases)").addOption("pdf-only", "PDF only").setValue(this.draft.visibleFileFilter ?? "all").onChange((v) => {
       this.draft.visibleFileFilter = v;
     }));
     new import_obsidian7.Setting(contentEl).setName("Ignore").setDesc("One per line. A name hides it anywhere (Archive). Starting with / or containing / means a path from the mount root (/Archive, 2019/Old). * is a wildcard (*.tmp). Hidden items are never scanned.").addTextArea((t) => {
@@ -2023,6 +2443,10 @@ var FolderBridgeSettingTab = class extends import_obsidian9.PluginSettingTab {
       settings.mountRootDeletionBehavior = v;
       await this.plugin.saveSettings();
     }));
+    new import_obsidian9.Setting(containerEl).setName("When a note changed on the drive while you edit it").setDesc("A colleague saved the same note before Obsidian noticed. Merge combines both sets of changes and keeps a copy of their version only when you both changed the same lines.").addDropdown((d) => d.addOption("merge", "Merge both versions (recommended)").addOption("copy", "Keep their version as a copy, save mine").addOption("overwrite", "Save mine, discard theirs").setValue(settings.conflictMode).onChange(async (v) => {
+      settings.conflictMode = v;
+      await this.plugin.saveSettings();
+    }));
     new import_obsidian9.Setting(containerEl).setName("Status bar").setDesc("Show the mount count and offline warnings in the status bar.").addToggle((t) => t.setValue(settings.showStatusBar).onChange(async (v) => {
       settings.showStatusBar = v;
       await this.plugin.saveSettings();
@@ -2054,6 +2478,8 @@ var FolderBridgeSettingTab = class extends import_obsidian9.PluginSettingTab {
     if (mount.watchMode === "off") parts.push("\xB7 change detection off");
     const row = new import_obsidian9.Setting(containerEl).setName(`${health === "unreachable" ? "\u26A0 " : ""}${this.plugin.displayName(mount)}`).setDesc(parts.join(" "));
     row.settingEl.addClass("folderbridge-mount-row");
+    const syncReason = this.plugin.syncBlocked.get(mount.id);
+    if (syncReason) row.descEl.createDiv({ cls: "folderbridge-error", text: `Not mounted: ${syncReason}` });
     if (health === "unreachable") {
       row.descEl.createDiv({ cls: "folderbridge-error", text: `Offline: ${this.plugin.healthError.get(mount.id) ?? "not reachable"}` });
     }
@@ -2158,6 +2584,8 @@ var FolderBridgePlugin = class extends import_obsidian11.Plugin {
     /** Serializes tree work per mount so scans and watcher batches never interleave. */
     this.queues = /* @__PURE__ */ new Map();
     this.probesInFlight = /* @__PURE__ */ new Set();
+    /** Mounts not activated because Obsidian Sync would sync them; value = reason. */
+    this.syncBlocked = /* @__PURE__ */ new Map();
     this.unloaded = false;
     /** Last mount-tree snapshot read or written (see TreeSnapshot.ts). */
     this.snapshot = { version: 1, mounts: {} };
@@ -2250,6 +2678,7 @@ var FolderBridgePlugin = class extends import_obsidian11.Plugin {
     }
     this.settings.mountPoints = accepted;
     if (this.settings.mountRootDeletionBehavior !== "unmount") this.settings.mountRootDeletionBehavior = "ask";
+    if (!["merge", "copy", "overwrite"].includes(this.settings.conflictMode)) this.settings.conflictMode = "merge";
     for (const mount of accepted.filter((m) => m.enabled)) {
       const clash = await this.vaultFolderClash(mount.virtualPath);
       if (clash) {
@@ -2291,10 +2720,6 @@ var FolderBridgePlugin = class extends import_obsidian11.Plugin {
     this.originalAdapter = original;
     const adapter = new VirtualAdapter(original, this.pathMapper, this.security, this.ignore, {
       confirmUnmount: (mount) => this.confirmUnmount(mount),
-      onMountRootMove: async (mount, newVirtualPath) => {
-        const error = await this.updateMount(mount.id, { ...mount, virtualPath: newVirtualPath });
-        if (error) throw new Error(`Folder Bridge: ${error}`);
-      },
       onWritten: (path5) => this.registerWrite(path5),
       onFolderCreated: (path5) => {
         if (!(this.index.get(path5) instanceof import_obsidian11.TFolder)) this.index.addFolder(path5);
@@ -2305,7 +2730,10 @@ var FolderBridgePlugin = class extends import_obsidian11.Plugin {
         const file = this.app.vault.getAbstractFileByPath(path5);
         return file instanceof import_obsidian11.TFile ? file.stat.mtime : void 0;
       },
-      isOffline: (id) => this.health.get(id) === "unreachable"
+      isOffline: (id) => this.health.get(id) === "unreachable" || this.syncBlocked.has(id),
+      conflictMode: () => this.settings.conflictMode,
+      requestReload: (path5) => this.reloadAfterSave(path5),
+      isOpenInEditor: (path5) => this.app.workspace.getLeavesOfType("markdown").some((leaf) => leaf.view.file?.path === path5)
     });
     const bound = (owner, val) => typeof val === "function" ? val.bind(owner) : val;
     vault.adapter = new Proxy(adapter, {
@@ -2329,12 +2757,50 @@ var FolderBridgePlugin = class extends import_obsidian11.Plugin {
    */
   async registerWrite(path5) {
     const mount = this.pathMapper.getMountForPath(path5);
-    const token = mount && this.sessions.get(mount.id);
-    if (!mount || !token) return;
+    if (!mount) return;
+    const token = this.sessions.get(mount.id);
     const stat = await this.app.vault.adapter.stat(path5);
-    if (!stat || stat.type !== "file" || this.sessions.get(mount.id) !== token) return;
+    if (!stat || stat.type !== "file") return;
+    if (token !== void 0 && this.sessions.get(mount.id) !== token) return;
+    if (token === void 0 && !(this.index.get(path5) instanceof import_obsidian11.TFile)) return;
     this.index.modifyFile(path5, stat);
     this.scheduleSnapshotSave(6e4);
+  }
+  /**
+   * After a save that merged in changes from disk, tell Obsidian the file
+   * changed so the open editor shows the merged text. Obsidian ignores that
+   * signal while it is still saving, so wait for the save to finish.
+   */
+  reloadAfterSave(path5, attempt = 0) {
+    window.setTimeout(() => void (async () => {
+      const file = this.app.vault.getAbstractFileByPath(path5);
+      if (!(file instanceof import_obsidian11.TFile) || this.unloaded) return;
+      if (file.saving && attempt < 40) {
+        this.reloadAfterSave(path5, attempt + 1);
+        return;
+      }
+      const stat = await this.app.vault.adapter.stat(path5);
+      if (stat) this.index.modifyFile(path5, stat);
+    })(), 150);
+  }
+  /**
+   * Obsidian Sync (or any sync tool) would upload every mounted file to the
+   * cloud and replay deletions from other devices onto the share. A mount is
+   * only activated when Sync is off or the mount's folder is excluded from it.
+   * Returns a reason when blocked, null when fine.
+   */
+  syncProblem(mount) {
+    const internal = this.app.internalPlugins;
+    const sync = internal?.getPluginById?.("sync") ?? internal?.plugins?.sync;
+    if (!sync?.enabled) return null;
+    const ignored = sync.instance?.filter?.ignoreFolders;
+    const folder = (0, import_obsidian11.normalizePath)(mount.virtualPath);
+    if (Array.isArray(ignored) && ignored.some((f) => typeof f === "string" && (folder === (0, import_obsidian11.normalizePath)(f) || folder.startsWith((0, import_obsidian11.normalizePath)(f) + "/")))) return null;
+    if (!Array.isArray(ignored)) {
+      logger.warn("Obsidian Sync is on but its excluded folders could not be read; make sure mounted folders are excluded.");
+      return null;
+    }
+    return `Obsidian Sync is on and "${folder}" is not excluded from it. Sync would upload the shared files and could delete them on the drive from another device. Exclude this folder in Settings \u2192 Sync \u2192 Excluded folders, then rescan.`;
   }
   /** Deleting a mount root in Obsidian = unmount (files untouched), after confirmation. */
   async confirmUnmount(mount) {
@@ -2409,6 +2875,7 @@ var FolderBridgePlugin = class extends import_obsidian11.Plugin {
     this.snapshot = parseSnapshot(text);
     let restored = 0;
     for (const mount of this.settings.mountPoints.filter((m) => m.enabled)) {
+      if (this.syncProblem(mount)) continue;
       restored += restoreMount(this.index, mount, this.snapshot.mounts[mount.id]);
     }
     if (restored > 0) logger.debug(`Restored ${restored} mounted items from the snapshot in ${Math.round(performance.now() - started)} ms`);
@@ -2579,6 +3046,14 @@ var FolderBridgePlugin = class extends import_obsidian11.Plugin {
   }
   /** Show a mount in the vault: index its contents and start watching. */
   async activateMount(mount, announce = false) {
+    const problem = this.syncProblem(mount);
+    if (problem) {
+      this.syncBlocked.set(mount.id, problem);
+      new import_obsidian11.Notice(`Folder Bridge: "${this.displayName(mount)}" was not mounted. ${problem}`, 0);
+      this.refreshSettingTab();
+      return;
+    }
+    this.syncBlocked.delete(mount.id);
     const token = Symbol(mount.id);
     this.sessions.set(mount.id, token);
     this.watcher.stop(mount.id);
@@ -2670,7 +3145,7 @@ var FolderBridgePlugin = class extends import_obsidian11.Plugin {
   /** Manual "rescan": re-probe, re-index, restart watching. */
   async rescanMount(mount) {
     if (!mount.enabled) return;
-    if (!this.sessions.has(mount.id)) {
+    if (!this.sessions.has(mount.id) || this.syncProblem(mount)) {
       await this.activateMount(mount, true);
       return;
     }
@@ -2947,6 +3422,7 @@ var FolderBridgePlugin = class extends import_obsidian11.Plugin {
       if (rel === "") {
         menu.addItem((item) => item.setTitle("Rescan mount").setIcon("refresh-cw").onClick(() => void this.rescanMount(mount)));
         menu.addItem((item) => item.setTitle("Edit mount\u2026").setIcon("settings").onClick(() => this.openMountModal(mount)));
+        menu.addItem((item) => item.setTitle("Unmount\u2026").setIcon("unlink").onClick(() => void this.confirmUnmount(mount)));
         return;
       }
       if (rel === void 0) return;

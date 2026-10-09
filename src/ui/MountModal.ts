@@ -144,10 +144,10 @@ export class MountModal extends Modal {
 
 		new Setting(contentEl)
 			.setName('File types')
-			.setDesc('Show only some files. Markdown only keeps big shares fast when you just need notes and Bases.')
+			.setDesc('Show only some files. "Notes only" keeps big shares fast when you just need notes and Bases.')
 			.addDropdown(d => d
 				.addOption('all', 'All files')
-				.addOption('markdown-only', 'Markdown and canvas only')
+				.addOption('markdown-only', 'Notes only (Markdown, canvas, Bases)')
 				.addOption('pdf-only', 'PDF only')
 				.setValue(this.draft.visibleFileFilter ?? 'all')
 				.onChange(v => { this.draft.visibleFileFilter = v as MountVisibleFileFilter; }));

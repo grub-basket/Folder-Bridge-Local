@@ -5,6 +5,8 @@
  */
 export type MountVisibleFileFilter = 'all' | 'markdown-only' | 'pdf-only';
 export type MountWatchMode = 'native' | 'poll' | 'off';
+/** A note changed on disk since Obsidian last saw it, and Obsidian is saving: */
+export type ConflictMode = 'merge' | 'copy' | 'overwrite';
 
 export interface MountPoint {
 	id: string;            // Unique identifier (generated at creation)
@@ -46,6 +48,8 @@ export interface FolderBridgeSettings {
 	 */
 	mountRootDeletionBehavior: 'ask' | 'unmount';
 	showStatusBar: boolean;
+	/** merge = combine both versions (copy when the same lines changed); copy = keep theirs as a copy; overwrite = last save wins. */
+	conflictMode: ConflictMode;
 	/**
 	 * Patterns applied to EVERY mount, exactly like per-mount ignoreList entries.
 	 * Defaults cover Windows/Office noise files.
@@ -57,6 +61,7 @@ export const DEFAULT_SETTINGS: FolderBridgeSettings = {
 	mountPoints: [],
 	mountRootDeletionBehavior: 'ask',
 	showStatusBar: true,
+	conflictMode: 'merge',
 	// Names starting with "." (.git, .DS_Store, …) are always hidden.
 	globalIgnorePatterns: ['Thumbs.db', 'desktop.ini', '~$*', '$RECYCLE.BIN', 'System Volume Information'],
 };

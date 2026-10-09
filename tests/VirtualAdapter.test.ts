@@ -13,6 +13,7 @@ let root: string;
 let vaultDir: string;
 let mountDir: string;
 let offline = false;
+let conflictMode: 'merge' | 'copy' | 'overwrite' = 'copy';
 
 beforeEach(async () => {
 	root = await fs.mkdtemp(path.join(os.tmpdir(), 'fbl-va-'));
@@ -27,9 +28,17 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	known.clear();
 	offline = false;
+	conflictMode = 'copy';
 	await fs.rm(root, { recursive: true, force: true });
 });
+
+const known = new Map<string, number>();
+
+async function learn(...paths: string[]): Promise<void> {
+	for (const p of paths) known.set(p, Math.round((await fs.stat(path.join(mountDir, ...p.split('/').slice(1)))).mtimeMs));
+}
 
 function make(over: Partial<MountPoint> = {}) {
 	const mount: MountPoint = {
@@ -53,16 +62,21 @@ function make(over: Partial<MountPoint> = {}) {
 	} as unknown as DataAdapter;
 	const callbacks: VirtualAdapterCallbacks = {
 		confirmUnmount: vi.fn(async () => true),
-		onMountRootMove: vi.fn(async () => { }),
-		onWritten: vi.fn(async () => { }),
+		onWritten: vi.fn(async (p: string) => {
+			const real = path.join(mountDir, ...p.split('/').slice(1));
+			known.set(p, Math.round((await fs.stat(real)).mtimeMs));
+		}),
 		onFolderCreated: vi.fn(),
 		onRenamed: vi.fn(),
 		onDeleted: vi.fn(async () => { }),
-		getKnownMtime: () => 42,
+		// Like Obsidian: it knows the files it indexed, and learns new ones on save.
+		getKnownMtime: p => known.get(p),
 		isOffline: () => offline,
+		conflictMode: () => conflictMode,
+		requestReload: vi.fn(),
 	};
 	const adapter = new VirtualAdapter(original, mapper, security, ignore, callbacks);
-	return { adapter, callbacks, original, mount };
+	return { adapter, callbacks, original, mount, known };
 }
 
 describe('VirtualAdapter reads', () => {
@@ -104,7 +118,7 @@ describe('VirtualAdapter reads', () => {
 		const { adapter } = make();
 		const url = adapter.getResourcePath('Fin/chart.png');
 		expect(url.startsWith('app://test-id/')).toBe(true);
-		expect(url.endsWith('/share/Reports/chart.png?42')).toBe(true);
+		expect(url).toMatch(/\/share\/Reports\/chart\.png\?\d+$/);
 		expect(adapter.getFilePath('Fin/chart.png')).toBe('file://' + path.join(mountDir, 'chart.png'));
 		expect(adapter.getFullPath('Fin/chart.png')).toBe(path.join(mountDir, 'chart.png'));
 	});
@@ -199,11 +213,10 @@ describe('VirtualAdapter writes', () => {
 	it('keeps a colleague\'s newer version as a conflict copy before overwriting', async () => {
 		const { adapter } = make();
 		// Obsidian believes the file has an older mtime than the one on disk.
-		const callbacks = (adapter as unknown as { callbacks: VirtualAdapterCallbacks }).callbacks;
-		callbacks.getKnownMtime = () => 1000;
+		known.set('Fin/Q1/summary.md', 1000);
 		await adapter.write('Fin/Q1/summary.md', 'mine');
 		expect(await fs.readFile(path.join(mountDir, 'Q1', 'summary.md'), 'utf8')).toBe('mine');
-		const kept = await fs.readdir(path.join(mountDir, '.folderbridge-trash'));
+		const kept = (await fs.readdir(path.join(mountDir, '.folderbridge-trash'))).filter(n => !n.startsWith('.'));
 		expect(kept).toHaveLength(1);
 		expect(kept[0]).toMatch(/^summary \(changed by someone else .*\)\.md$/);
 		expect(await fs.readFile(path.join(mountDir, '.folderbridge-trash', kept[0]), 'utf8')).toBe('# Q1');
@@ -233,5 +246,109 @@ describe('VirtualAdapter writes', () => {
 		expect((await fs.stat(path.join(mountDir, 'Q1', 'summary.md'))).isFile()).toBe(true);
 		(callbacks.confirmUnmount as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
 		await expect(adapter.remove('Fin')).rejects.toThrow(/cancelled/);
+	});
+});
+
+describe('data safety', () => {
+	const real = (...p: string[]) => path.join(mountDir, ...p);
+
+	it('merges a colleague\'s change with mine when different lines changed', async () => {
+		conflictMode = 'merge';
+		const { adapter, callbacks } = make();
+		await fs.writeFile(real('Q1', 'note.md'), 'line 1\nline 2\nline 3\n');
+		await learn('Fin/Q1/note.md');
+		expect(await adapter.read('Fin/Q1/note.md')).toBe('line 1\nline 2\nline 3\n'); // Obsidian opens it
+		await fs.writeFile(real('Q1', 'note.md'), 'line 1\nline 2\nline 3 (theirs)\n'); // colleague saves
+		const future = new Date(Date.now() + 5000);
+		await fs.utimes(real('Q1', 'note.md'), future, future);
+		await adapter.write('Fin/Q1/note.md', 'line 1 (mine)\nline 2\nline 3\n'); // my save
+		expect(await fs.readFile(real('Q1', 'note.md'), 'utf8')).toBe('line 1 (mine)\nline 2\nline 3 (theirs)\n');
+		expect(callbacks.requestReload).toHaveBeenCalledWith('Fin/Q1/note.md');
+	});
+
+	it('falls back to a conflict copy when both changed the same line', async () => {
+		conflictMode = 'merge';
+		const { adapter } = make();
+		await fs.writeFile(real('Q1', 'note.md'), 'total: 100\n');
+		await learn('Fin/Q1/note.md');
+		await adapter.read('Fin/Q1/note.md');
+		await fs.writeFile(real('Q1', 'note.md'), 'total: 200\n');
+		const future = new Date(Date.now() + 5000);
+		await fs.utimes(real('Q1', 'note.md'), future, future);
+		await adapter.write('Fin/Q1/note.md', 'total: 150\n');
+		expect(await fs.readFile(real('Q1', 'note.md'), 'utf8')).toBe('total: 150\n');
+		const copies = (await fs.readdir(real('.folderbridge-trash'))).filter(n => n.includes('changed by someone else'));
+		expect(copies).toHaveLength(1);
+		expect(await fs.readFile(real('.folderbridge-trash', copies[0]), 'utf8')).toBe('total: 200\n');
+	});
+
+	it('never saves over a file that is not UTF-8, and keeps CRLF and BOM files as they were', async () => {
+		const { adapter } = make();
+		await fs.writeFile(real('Q1', 'ansi.md'), Buffer.from([0x50, 0x72, 0x69, 0x63, 0x65, 0x20, 0xa3, 0x35, 0x0d, 0x0a])); // "Price £5" in Windows-1252
+		await learn('Fin/Q1/ansi.md');
+		expect(await adapter.read('Fin/Q1/ansi.md')).toBe('Price £5\r\n');
+		await expect(adapter.write('Fin/Q1/ansi.md', 'Price £6\n')).rejects.toThrow(/not stored as UTF-8/);
+		expect((await fs.readFile(real('Q1', 'ansi.md')))[6]).toBe(0xa3); // untouched
+
+		await fs.writeFile(real('Q1', 'crlf.md'), Buffer.from('\ufeffa\r\nb\r\n', 'utf8'));
+		await learn('Fin/Q1/crlf.md');
+		expect(await adapter.read('Fin/Q1/crlf.md')).toBe('a\r\nb\r\n');
+		await adapter.write('Fin/Q1/crlf.md', 'a\nb\nc\n');
+		expect(await fs.readFile(real('Q1', 'crlf.md'), 'utf8')).toBe('\ufeffa\r\nb\r\nc\r\n');
+	});
+
+	it('creating a note never replaces a file that already exists on the drive', async () => {
+		const { adapter } = make();
+		await fs.writeFile(real('Q1', 'existing.md'), 'keep me');
+		await expect(adapter.write('Fin/Q1/existing.md', 'new')).rejects.toThrow();
+		expect(await fs.readFile(real('Q1', 'existing.md'), 'utf8')).toBe('keep me');
+	});
+
+	it('a failed save keeps the previous version', async () => {
+		const { adapter } = make();
+		await learn('Fin/Q1/summary.md');
+		await fs.chmod(real('Q1', 'summary.md'), 0o444);
+		try {
+			await expect(adapter.write('Fin/Q1/summary.md', 'new')).rejects.toThrow(/previous version is kept/);
+		} finally {
+			await fs.chmod(real('Q1', 'summary.md'), 0o644);
+		}
+		expect(await fs.readFile(real('Q1', 'summary.md'), 'utf8')).toBe('# Q1');
+		const saving = await fs.readdir(real('.folderbridge-trash', '.saving'));
+		expect(saving).toHaveLength(1);
+	});
+
+	it('a successful save leaves no backup behind', async () => {
+		const { adapter } = make();
+		await learn('Fin/Q1/summary.md');
+		await adapter.write('Fin/Q1/summary.md', 'new');
+		expect(await fs.readdir(real('.folderbridge-trash', '.saving'))).toHaveLength(0);
+	});
+
+	it('permanent deletes go to the trash folder instead', async () => {
+		const { adapter } = make();
+		await adapter.remove('Fin/chart.png');
+		await adapter.rmdir('Fin/Q1', true);
+		const trashed = (await fs.readdir(real('.folderbridge-trash'))).filter(n => !n.startsWith('.'));
+		expect(trashed.some(n => n.endsWith(' chart.png'))).toBe(true);
+		expect(trashed.some(n => n.endsWith(' Q1'))).toBe(true);
+	});
+
+	it('refuses to trash a folder holding files Obsidian does not show', async () => {
+		const { adapter } = make({ visibleFileFilter: 'markdown-only' });
+		await fs.writeFile(real('Q1', 'budget.xlsx'), 'numbers');
+		await expect(adapter.trashLocal('Fin/Q1')).rejects.toThrow(/hidden/);
+		expect((await fs.stat(real('Q1', 'budget.xlsx'))).isFile()).toBe(true);
+	});
+
+	it('refuses to drag a mount root (would rewrite links in shared notes)', async () => {
+		const { adapter } = make();
+		await expect(adapter.rename('Fin', 'Elsewhere/Fin')).rejects.toThrow(/Edit mount/);
+	});
+
+	it('reports "exists" when the drive cannot answer', async () => {
+		const { adapter } = make();
+		offline = true;
+		expect(await adapter.exists('Fin/whatever.md')).toBe(true);
 	});
 });

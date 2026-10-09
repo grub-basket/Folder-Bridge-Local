@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type FolderBridgePlugin from '../../main';
-import { DEFAULT_SETTINGS, MountPoint } from '../types';
+import { ConflictMode, DEFAULT_SETTINGS, MountPoint } from '../types';
 import { stripLongPathPrefix } from '../OSHelpers';
 
 export class FolderBridgeSettingTab extends PluginSettingTab {
@@ -40,6 +40,19 @@ export class FolderBridgeSettingTab extends PluginSettingTab {
 				.setValue(settings.mountRootDeletionBehavior)
 				.onChange(async v => {
 					settings.mountRootDeletionBehavior = v as typeof settings.mountRootDeletionBehavior;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('When a note changed on the drive while you edit it')
+			.setDesc('A colleague saved the same note before Obsidian noticed. Merge combines both sets of changes and keeps a copy of their version only when you both changed the same lines.')
+			.addDropdown(d => d
+				.addOption('merge', 'Merge both versions (recommended)')
+				.addOption('copy', 'Keep their version as a copy, save mine')
+				.addOption('overwrite', 'Save mine, discard theirs')
+				.setValue(settings.conflictMode)
+				.onChange(async v => {
+					settings.conflictMode = v as ConflictMode;
 					await this.plugin.saveSettings();
 				}));
 
@@ -85,6 +98,8 @@ export class FolderBridgeSettingTab extends PluginSettingTab {
 			.setName(`${health === 'unreachable' ? '⚠ ' : ''}${this.plugin.displayName(mount)}`)
 			.setDesc(parts.join(' '));
 		row.settingEl.addClass('folderbridge-mount-row');
+		const syncReason = this.plugin.syncBlocked.get(mount.id);
+		if (syncReason) row.descEl.createDiv({ cls: 'folderbridge-error', text: `Not mounted: ${syncReason}` });
 		if (health === 'unreachable') {
 			row.descEl.createDiv({ cls: 'folderbridge-error', text: `Offline: ${this.plugin.healthError.get(mount.id) ?? 'not reachable'}` });
 		}

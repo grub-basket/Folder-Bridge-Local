@@ -1,6 +1,7 @@
 import { MountPoint } from './types';
 
-export const MARKDOWN_EXTENSIONS: ReadonlySet<string> = new Set(['.md', '.canvas', '.mdx']);
+/** "Notes only": Markdown, canvas and Bases files. */
+export const MARKDOWN_EXTENSIONS: ReadonlySet<string> = new Set(['.md', '.canvas', '.mdx', '.base']);
 export const PDF_EXTENSIONS: ReadonlySet<string> = new Set(['.pdf']);
 
 /**

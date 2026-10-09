@@ -213,3 +213,28 @@ describe('isVisibleFileInMount', () => {
 		expect(isVisibleFileInMount('a/b.PDF', { visibleFileFilter: 'pdf-only' })).toBe(true);
 	});
 });
+
+describe('text files', async () => {
+	const { RecentTexts, decodeText, mergeText } = await import('../src/textFiles');
+
+	it('keeps pinned (open) notes when evicting', () => {
+		const recent = new RecentTexts(p => p === 'open.md', 3);
+		recent.set('open.md', 'base');
+		for (let i = 0; i < 10; i++) recent.set(`n${i}.md`, 'x');
+		expect(recent.get('open.md')).toBe('base');
+		expect(recent.get('n0.md')).toBeUndefined();
+	});
+
+	it('detects UTF-16 and Windows-1252 as unsafe, UTF-8 BOM and CRLF as safe', () => {
+		expect(decodeText(new Uint8Array([0xff, 0xfe, 0x41, 0x00])).format.unsafe).toBe(true);
+		expect(decodeText(new Uint8Array([0x41, 0xa3])).format.unsafe).toBe(true);
+		const bom = decodeText(new Uint8Array([0xef, 0xbb, 0xbf, 0x61, 0x0d, 0x0a]));
+		expect(bom).toEqual({ text: 'a\r\n', format: { bom: true, crlf: true, unsafe: false } });
+	});
+
+	it('merges non-overlapping edits and refuses overlapping ones', () => {
+		expect(mergeText('a\nb\nc', 'A\nb\nc', 'a\nb\nC')).toEqual({ clean: true, merged: 'A\nb\nC' });
+		expect(mergeText('a\nb', 'x\nb', 'y\nb').clean).toBe(false);
+		expect(mergeText('a', 'a', 'b')).toEqual({ clean: true, merged: 'b' });
+	});
+});
