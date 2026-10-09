@@ -137,6 +137,15 @@ describe('IgnoreMatcher', () => {
 		expect(ig.isIgnored('Report.md', m)).toBe(false);
 	});
 
+	it('treats a leading "/" pattern literally, even with "*" in the name', () => {
+		const ig = new IgnoreMatcher(false);
+		const mm = mount({ ignoreList: ['/Draft*'] });
+		ig.rebuild([], [mm]);
+		expect(ig.isPathIgnored('Draft*', mm)).toBe(true);
+		expect(ig.isPathIgnored('Draft*/x.md', mm)).toBe(true);
+		expect(ig.isPathIgnored('Drafts', mm)).toBe(false);
+	});
+
 	it('checks every segment of a path', () => {
 		const ig = new IgnoreMatcher(false);
 		ig.rebuild([], [m]);

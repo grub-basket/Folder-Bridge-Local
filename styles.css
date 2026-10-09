@@ -192,3 +192,79 @@
 	font-weight: var(--font-semibold);
 	margin: var(--size-4-2) 0;
 }
+
+/* "What's in this mount?" */
+.folderbridge-insights-modal {
+	width: min(760px, 92vw);
+}
+
+.folderbridge-insights-summary {
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	gap: var(--size-4-2);
+	margin: var(--size-4-2) 0 var(--size-4-3);
+}
+
+@media (max-width: 520px) {
+	.folderbridge-insights-summary {
+		grid-template-columns: repeat(2, 1fr);
+	}
+}
+
+.folderbridge-insights-stat {
+	background: var(--background-secondary);
+	border-radius: var(--radius-m);
+	padding: var(--size-4-2) var(--size-4-3);
+}
+
+.folderbridge-insights-value {
+	font-size: var(--font-ui-large);
+	font-weight: var(--font-semibold);
+}
+
+.folderbridge-insights-label {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.folderbridge-insights-table {
+	display: flex;
+	flex-direction: column;
+}
+
+.folderbridge-insights-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+	gap: var(--size-4-2);
+	align-items: center;
+	padding: var(--size-4-1) 0;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.folderbridge-insights-name {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.folderbridge-insights-bar {
+	height: 4px;
+	margin-top: var(--size-2-1);
+	background: var(--background-modifier-border);
+	border-radius: 2px;
+}
+
+.folderbridge-insights-fill {
+	height: 100%;
+	width: var(--folderbridge-share, 0%);
+	background: var(--interactive-accent);
+	border-radius: 2px;
+}
+
+.folderbridge-insights-row.is-hiding {
+	opacity: 0.5;
+}
+
+.folderbridge-insights-numbers {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}

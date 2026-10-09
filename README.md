@@ -88,14 +88,25 @@ If Obsidian Sync is on, a mount is only activated when its vault folder is in Sy
 
 Anyone who can change files in the vault's `.obsidian` folder can change this plugin (and every other plugin) and run code as you. If the vault sits on a shared drive, make sure only you can write to its `.obsidian` folder, or keep the vault on your own PC and only mount the shared folders.
 
+## What's in a mount? (making big mounts small)
+
+Right-click a mount's folder and choose **What's in this mount?** (also in the settings and the command palette). It shows:
+
+- how many files, notes and folders the mount brings into the vault, how much space they take on the drive, and how long the last full check of the drive took;
+- the folders holding most of it, biggest first, each with a **Hide** button. Hiding takes the folder out of the vault immediately, without touching the drive, and it is never checked again;
+- a one-click switch to **Notes only** when most of the files are spreadsheets, PDFs or other files that notes and Bases don't need.
+
+This is the quick way to mount a whole drive and then trim it down to what you actually use. Undo a hide by removing the line from the mount's ignore list.
+
 ## Commands
 
 - Add mount
 - Rescan all mounts
+- What's in a mount? (size report)
 - Turn a mount on or off
 - Make a mount read-only or writable
 
-Right-click a mount's folder for **Rescan mount** and **Edit mount…**. Right-click anything inside a mount for **Hide from this mount**.
+Right-click a mount's folder for **Rescan mount**, **Edit mount…**, **What's in this mount?** and **Unmount…**. Right-click anything inside a mount for **Hide from this mount**.
 
 ## Credits and license
 

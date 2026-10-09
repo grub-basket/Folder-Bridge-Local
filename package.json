@@ -1,6 +1,6 @@
 {
     "name": "folder-bridge-local",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Windows-focused fork of Folder Bridge: mount local folders, mapped drives and UNC shares into an Obsidian vault.",
     "main": "main.js",
     "scripts": {

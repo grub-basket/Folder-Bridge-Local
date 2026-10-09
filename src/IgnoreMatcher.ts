@@ -34,7 +34,7 @@ export function wildcardMatch(pattern: string, text: string): boolean {
  * its own ignoreList):
  *   - plain name          "node_modules"   → any file/folder with that name
  *   - contains "/"        "Archive/2019"   → that subtree, relative to the mount root
- *                         "/Archive"       → leading "/" anchors a single name to the root
+ *                         "/Archive"       → leading "/": exactly that item from the root, no wildcards
  *   - contains "*"        "*.tmp", "~$*"   → glob on the name ("*" never crosses "/")
  *
  * Matching is case-insensitive on Windows and macOS, like their file systems, so
@@ -55,7 +55,11 @@ export class IgnoreMatcher {
 			for (const raw of [...globalPatterns, ...(mount.ignoreList ?? [])]) {
 				const pattern = raw.trim();
 				if (!pattern) continue;
-				if (pattern.includes('*')) {
+				if (pattern.startsWith('/')) {
+					// "/x/y": exactly that item below the mount root, taken literally
+					// (a folder named "Draft*" is still just that folder).
+					compiled.paths.push(this.fold(normalizePath(pattern)));
+				} else if (pattern.includes('*')) {
 					compiled.globs.push(this.fold(pattern));
 				} else if (pattern.includes('/') || pattern.includes('\\')) {
 					compiled.paths.push(this.fold(normalizePath(pattern.replace(/\\/g, '/'))));

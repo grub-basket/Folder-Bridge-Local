@@ -113,6 +113,7 @@ export class FolderBridgeSettingTab extends PluginSettingTab {
 				await this.plugin.rescanMount(mount);
 				this.render();
 			}))
+			.addExtraButton(b => b.setIcon('bar-chart-2').setTooltip("What's in this mount?").setDisabled(!mount.enabled).onClick(() => this.plugin.openInsights(mount)))
 			.addExtraButton(b => b.setIcon('pencil').setTooltip('Edit').onClick(() => this.plugin.openMountModal(mount)))
 			.addExtraButton(b => b.setIcon('trash').setTooltip('Remove mount (files are kept)').onClick(async () => {
 				await this.plugin.removeMount(mount.id);
