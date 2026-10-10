@@ -129,6 +129,40 @@ describe('syncTree', () => {
 		await syncTree('Fin', s.deps);
 		expect(disk.listCalls).toBeLessThan(10);
 	});
+
+	it('uses stats that come with the listing and stats only the files without one', async () => {
+		const disk = new FakeDisk().folder('Fin/Q1').file('Fin/a.md', 5).file('Fin/link.md', 6).file('Fin/Q1/b.md', 7);
+		const fs1 = setup(disk);
+		await syncTree('Fin', fs1.deps);
+		const statsWithFs = disk.statCalls;
+
+		const s = setup(disk);
+		s.deps.listWithStats = async folder => {
+			const l = await disk.list(folder);
+			// "link.md" arrives without a stat, as a resolved link would.
+			return { files: l.files.map(p => ({ path: p, stat: p.endsWith('link.md') ? undefined : disk.entries.get(p) })), folders: l.folders };
+		};
+		disk.statCalls = 0;
+		const result = await syncTree('Fin', s.deps);
+		expect(result).toMatchObject({ added: 4, modified: 0, removed: 0 });
+		expect(s.vault.paths()).toEqual(fs1.vault.paths());
+		expect(disk.statCalls).toBe(1);
+		expect(statsWithFs).toBe(3);
+
+		// Same disk again: nothing changes.
+		disk.statCalls = 0;
+		expect(await syncTree('Fin', s.deps)).toMatchObject({ added: 0, modified: 0, removed: 0 });
+	});
+
+	it('treats a failing listWithStats like a failing list', async () => {
+		const disk = new FakeDisk().folder('Fin/Q1').file('Fin/Q1/b.md');
+		const s = setup(disk);
+		await syncTree('Fin', s.deps);
+		s.deps.listWithStats = async folder => { if (folder === 'Fin/Q1') throw new Error('EIO'); return { files: [], folders: ['Fin/Q1'] }; };
+		const result = await syncTree('Fin', s.deps);
+		expect(result.failedFolders).toEqual(['Fin/Q1']);
+		expect(s.vault.paths()).toContain('Fin/Q1/b.md');
+	});
 });
 
 describe('review fixes', () => {

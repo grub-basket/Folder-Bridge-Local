@@ -8,6 +8,7 @@ import { SecurityManager } from '../src/SecurityManager';
 import { IgnoreMatcher } from '../src/IgnoreMatcher';
 import { VirtualAdapter, VirtualAdapterCallbacks } from '../src/VirtualAdapter';
 import type { MountPoint } from '../src/types';
+import type { FolderLister, RawDirEntry } from '../src/fastScan';
 // The same module the source gets for 'obsidian' (vitest alias).
 import { Notice } from './__mocks__/obsidian';
 
@@ -138,6 +139,58 @@ describe('VirtualAdapter reads', () => {
 		const { adapter } = make();
 		await expect(adapter.read('Fin/../share/secret.md')).rejects.toThrow();
 		expect(await adapter.stat('Fin/Q1/../../x')).toBeNull();
+	});
+});
+
+/** What the fast-scan helper returns, built with fs so it runs on any OS. */
+const fsLister: FolderLister = {
+	async list(realDirPath) {
+		const dirents = await fs.readdir(realDirPath, { withFileTypes: true });
+		return Promise.all(dirents.map(async (d): Promise<RawDirEntry> => {
+			const s = await fs.lstat(path.join(realDirPath, d.name));
+			const kind = d.isSymbolicLink() ? 'link' : d.isDirectory() ? 'folder' : 'file';
+			return { name: d.name, kind, size: kind === 'file' ? s.size : 0, mtime: Math.round(s.mtimeMs), ctime: Math.round(s.birthtimeMs || s.ctimeMs) };
+		}));
+	},
+};
+
+describe('VirtualAdapter fast scan listing', () => {
+	beforeEach(async () => {
+		// Things the listing rules hide or skip.
+		await fs.writeFile(path.join(mountDir, '.hidden.md'), 'x');
+		await fs.writeFile(path.join(mountDir, 'tool.exe'), 'x');
+		await fs.writeFile(path.join(mountDir, 'Thumbs.db'), 'x');
+		await fs.writeFile(path.join(mountDir, 'Café.md'), 'not NFC: cannot round-trip');
+		await fs.writeFile(path.join(mountDir, 'notes.md'), 'hello');
+	});
+
+	it('applies exactly the filters of listMounted and returns the same stats as statMounted', async () => {
+		const { adapter } = make({ ignoreList: ['Archive', 'Thumbs.db'] });
+		for (const folder of ['Fin', 'Fin/Q1']) {
+			const plain = await adapter.listMounted(folder);
+			const fast = await adapter.listMountedWithStats(folder, fsLister);
+			expect(fast.folders).toEqual(plain.folders);
+			expect(fast.files.map(f => f.path)).toEqual(plain.files);
+			for (const f of fast.files) expect(f.stat).toEqual(await adapter.statMounted(f.path));
+		}
+		expect((await adapter.listMountedWithStats('Fin', fsLister)).files.map(f => f.path).sort()).toEqual(['Fin/chart.png', 'Fin/notes.md']);
+		expect(adapter.ioStats.fastLists).toBeGreaterThan(0);
+	});
+
+	it('applies the file-type filter', async () => {
+		const { adapter } = make({ visibleFileFilter: 'markdown-only' });
+		expect((await adapter.listMountedWithStats('Fin', fsLister)).files.map(f => f.path)).toEqual(['Fin/notes.md']);
+	});
+
+	it('falls back to fs when the helper fails, and throws when fs does', async () => {
+		const { adapter } = make();
+		const broken: FolderLister = { list: async () => { throw new Error('helper died'); } };
+		const fast = await adapter.listMountedWithStats('Fin', broken);
+		expect(fast.files.map(f => f.path)).toEqual((await adapter.listMounted('Fin')).files);
+		expect(fast.files.every(f => f.stat === undefined)).toBe(true);
+		await expect(adapter.listMountedWithStats('Fin/Missing', broken)).rejects.toThrow(/Cannot list/);
+		offline = true;
+		await expect(adapter.listMountedWithStats('Fin', fsLister)).rejects.toThrow(/offline/);
 	});
 });
 

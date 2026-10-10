@@ -1,7 +1,7 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type FolderBridgePlugin from '../../main';
 import { ConflictMode, DEFAULT_SETTINGS, MountPoint } from '../types';
-import { stripLongPathPrefix } from '../OSHelpers';
+import { IS_WINDOWS, stripLongPathPrefix } from '../OSHelpers';
 
 export class FolderBridgeSettingTab extends PluginSettingTab {
 	constructor(app: App, private readonly plugin: FolderBridgePlugin) {
@@ -66,6 +66,17 @@ export class FolderBridgeSettingTab extends PluginSettingTab {
 				if (v) this.plugin.createStatusBar();
 				else this.plugin.removeStatusBar();
 			}));
+
+		if (IS_WINDOWS) {
+			new Setting(containerEl)
+				.setName('Fast scan on Windows (uses PowerShell)')
+				.setDesc('Scans read sizes and dates for a whole folder at once instead of asking for each file, which is much faster on network drives. Runs one read-only PowerShell process in the background. If it fails, scans use the normal method.')
+				.addToggle(t => t.setValue(settings.fastScanWindows ?? false).onChange(async v => {
+					settings.fastScanWindows = v;
+					await this.plugin.saveSettings();
+					this.plugin.updateFastScan();
+				}));
+		}
 
 		let pending = settings.globalIgnorePatterns.join('\n');
 		new Setting(containerEl)

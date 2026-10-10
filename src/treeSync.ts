@@ -10,6 +10,12 @@ export interface TreeSyncDeps {
 	/** List a mounted folder. MUST throw on I/O errors (an empty result means empty). */
 	list(folderPath: string): Promise<{ files: string[]; folders: string[] }>;
 	/**
+	 * Optional: list AND stat in one go (Windows fast scan). Used instead of
+	 * list() when present; same contract (throws on I/O errors). A file
+	 * without a stat is stat'ed the normal way.
+	 */
+	listWithStats?(folderPath: string): Promise<{ files: { path: string; stat?: VaultStat }[]; folders: string[] }>;
+	/**
 	 * Stat a mounted path. null ONLY when the path is confirmed missing (or
 	 * hidden by the mount's rules); any other failure MUST throw, so a
 	 * network hiccup is never mistaken for a deletion.
@@ -144,8 +150,16 @@ export async function syncTree(rootFolder: string, deps: TreeSyncDeps, options: 
 
 	const syncFolder = async (folder: string, depth: number): Promise<void> => {
 		let listing: { files: string[]; folders: string[] };
+		/** Stats that came with the listing, by index in listing.files. */
+		let listedStats: (VaultStat | undefined)[] = [];
 		try {
-			listing = await deps.list(folder);
+			if (deps.listWithStats) {
+				const withStats = await deps.listWithStats(folder);
+				listing = { files: withStats.files.map(f => f.path), folders: withStats.folders };
+				listedStats = withStats.files.map(f => f.stat);
+			} else {
+				listing = await deps.list(folder);
+			}
 			ok();
 		} catch {
 			fail();
@@ -185,7 +199,10 @@ export async function syncTree(rootFolder: string, deps: TreeSyncDeps, options: 
 			await tick();
 		}
 
-		const stats = await Promise.all(listing.files.map(f => statSafe(f)));
+		const stats = await Promise.all(listing.files.map((f, i) => {
+			const listed = listedStats[i];
+			return listed ? Promise.resolve(listed) : statSafe(f);
+		}));
 		if (!alive()) return;
 		for (let i = 0; i < listing.files.length; i++) {
 			const file = listing.files[i];

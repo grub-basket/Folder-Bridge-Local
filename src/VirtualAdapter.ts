@@ -9,6 +9,7 @@ import { ConflictMode, MountPoint, VaultStat } from './types';
 import { RecentTexts, TextFormat, decodeText, encodeText, isMergeableText, mergeText } from './textFiles';
 import { logger } from './logger';
 import { EXECUTABLE_EXTENSIONS, getLowercaseExtension, isVisibleFileInMount } from './mountFileFilter';
+import type { FolderLister, RawDirEntry } from './fastScan';
 import {
 	realPathToResourceUrl,
 	ensureLongPathPrefix,
@@ -99,7 +100,7 @@ export class VirtualAdapter {
 	/** "<mount id>:<reason>" pairs whose blocked-write notice was shown. */
 	private blockedNoticed = new Set<string>();
 	/** Diagnostics: how much mounted I/O this session did. */
-	readonly ioStats = { reads: 0, lists: 0, stats: 0, writes: 0 };
+	readonly ioStats = { reads: 0, lists: 0, stats: 0, writes: 0, fastLists: 0 };
 	/** Mounts where a safety copy could not be made (warned once). */
 	private backupWarned = new Set<string>();
 	/** How each text file read so far is stored (line endings, BOM, encoding). */
@@ -385,27 +386,72 @@ export class VirtualAdapter {
 		const mount = this.pathMapper.getMountForPath(normalizedPath);
 		if (!mount) throw new Error(`Folder Bridge: "${normalizedPath}" is not in a mount.`);
 		if (this.isPathIgnored(normalizedPath, mount)) return { files: [], folders: [] };
-		return this.listRealDirectory(this.toReal(normalizedPath, mount), normalizePath(normalizedPath), mount);
+		const { files, folders } = await this.listRealDirectory(this.toReal(normalizedPath, mount), normalizePath(normalizedPath), mount);
+		return { files, folders };
 	}
 
+	/**
+	 * listMounted, plus the stat of each plain file, from ONE directory query
+	 * through the fast-scan helper (Windows). Exactly the same filters apply.
+	 * When the helper fails in any way this falls back to listMounted (files
+	 * then have no stat, and the caller stats them), so it throws exactly
+	 * when listMounted would.
+	 */
+	async listMountedWithStats(normalizedPath: string, lister: FolderLister): Promise<{ files: { path: string; stat?: VaultStat }[]; folders: string[] }> {
+		const mount = this.pathMapper.getMountForPath(normalizedPath);
+		if (!mount) throw new Error(`Folder Bridge: "${normalizedPath}" is not in a mount.`);
+		if (this.isPathIgnored(normalizedPath, mount)) return { files: [], folders: [] };
+		const realDirPath = this.toReal(normalizedPath, mount);
+		let raw: RawDirEntry[] | undefined;
+		try {
+			raw = await lister.list(realDirPath);
+			this.ioStats.fastLists++;
+		} catch (e) {
+			logger.debug(`Fast scan fell back to fs for "${normalizedPath}":`, e);
+		}
+		const { files, folders, stats } = await this.listRealDirectory(realDirPath, normalizePath(normalizedPath), mount, raw);
+		return { files: files.map(p => ({ path: p, stat: stats.get(p) })), folders };
+	}
+
+	/**
+	 * List one real folder and apply the mount's rules. `raw` comes from the
+	 * fast-scan helper; without it the folder is read with fs.readdir. Both
+	 * are typed the same way (see kindFromAttributes), then share every filter.
+	 */
 	private async listRealDirectory(
 		realDirPath: string,
 		virtualParentPath: string,
 		mount: MountPoint,
-	): Promise<{ files: string[]; folders: string[] }> {
+		raw?: RawDirEntry[],
+	): Promise<{ files: string[]; folders: string[]; stats: Map<string, VaultStat> }> {
 		const files: string[] = [];
 		const folders: string[] = [];
+		/** Plain files the helper already stat'ed (links are always resolved with fs below). */
+		const stats = new Map<string, VaultStat>();
 		const parentRel = this.pathMapper.getMountRelativePath(virtualParentPath, mount) ?? '';
 
-		let entries: fs.Dirent[];
-		this.ioStats.lists++;
-		try {
-			entries = await fs.promises.readdir(realDirPath, { withFileTypes: true });
-		} catch (e) {
-			throw new Error(`Folder Bridge: Cannot list "${stripLongPathPrefix(realDirPath)}": ${translateFsError(e as NodeJS.ErrnoException, 'list')}`);
+		let entries: { name: string; kind: RawDirEntry['kind']; raw?: RawDirEntry }[];
+		if (raw) {
+			entries = raw.map(e => ({ name: e.name, kind: e.kind, raw: e }));
+		} else {
+			this.ioStats.lists++;
+			let dirents: fs.Dirent[];
+			try {
+				dirents = await fs.promises.readdir(realDirPath, { withFileTypes: true });
+			} catch (e) {
+				throw new Error(`Folder Bridge: Cannot list "${stripLongPathPrefix(realDirPath)}": ${translateFsError(e as NodeJS.ErrnoException, 'list')}`);
+			}
+			entries = dirents.map(d => ({
+				name: d.name,
+				kind: d.isDirectory() ? 'folder'
+					: d.isFile() ? 'file'
+						// Symlinks / junctions, and entries whose type the share did not report.
+						: d.isSymbolicLink() || !(d.isFIFO() || d.isSocket() || d.isBlockDevice() || d.isCharacterDevice()) ? 'link'
+							: 'other',
+			}));
 		}
 
-		const links: { entry: fs.Dirent; virtualChild: string }[] = [];
+		const links: { name: string; virtualChild: string }[] = [];
 		for (const entry of entries) {
 			const entryRel = parentRel ? `${parentRel}/${entry.name}` : entry.name;
 			if (this.ignore.isIgnored(entry.name, mount, entryRel)) continue;
@@ -414,12 +460,17 @@ export class VirtualAdapter {
 			// to the same file: skip rather than open the wrong thing.
 			if (normalizePath(entry.name) !== entry.name || invalidWindowsNameReason(entry.name)) continue;
 			const virtualChild = `${virtualParentPath}/${entry.name}`;
-			if (entry.isDirectory()) folders.push(virtualChild);
-			else if (entry.isFile()) {
-				if (isVisibleFileInMount(virtualChild, mount)) files.push(virtualChild);
-			} else if (entry.isSymbolicLink() || !(entry.isFIFO() || entry.isSocket() || entry.isBlockDevice() || entry.isCharacterDevice())) {
-				// Symlinks / junctions, and entries whose type the share did not report.
-				links.push({ entry, virtualChild });
+			if (entry.kind === 'folder') folders.push(virtualChild);
+			else if (entry.kind === 'file') {
+				if (!isVisibleFileInMount(virtualChild, mount)) continue;
+				files.push(virtualChild);
+				// ctime 0 would make toVaultStat fall back to the change time,
+				// which a directory query does not return: let fs stat that one.
+				if (entry.raw && entry.raw.ctime !== 0) {
+					stats.set(virtualChild, { type: 'file', ctime: entry.raw.ctime, mtime: entry.raw.mtime, size: entry.raw.size });
+				}
+			} else if (entry.kind === 'link') {
+				links.push({ name: entry.name, virtualChild });
 			}
 		}
 
@@ -429,15 +480,15 @@ export class VirtualAdapter {
 		// folder, so a briefly unreachable DFS target is not taken for deleted.
 		const parentReal = stripLongPathPrefix(realDirPath);
 		for (let i = 0; i < links.length; i += 8) {
-			await Promise.all(links.slice(i, i + 8).map(async ({ entry, virtualChild }) => {
-				const linkPath = path.join(realDirPath, entry.name);
+			await Promise.all(links.slice(i, i + 8).map(async ({ name, virtualChild }) => {
+				const linkPath = path.join(realDirPath, name);
 				let s: fs.Stats;
 				let target: string;
 				try {
 					[s, target] = await Promise.all([fs.promises.stat(linkPath), fs.promises.realpath(linkPath)]);
 				} catch (e) {
 					if (isMissing(e) || (e as NodeJS.ErrnoException).code === 'ELOOP') return; // broken or looping link
-					throw new Error(`Folder Bridge: Cannot resolve "${entry.name}": ${translateFsError(e as NodeJS.ErrnoException, 'stat')}`);
+					throw new Error(`Folder Bridge: Cannot resolve "${name}": ${translateFsError(e as NodeJS.ErrnoException, 'stat')}`);
 				}
 				const rel = path.relative(target, parentReal);
 				const isAncestor = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
@@ -446,7 +497,7 @@ export class VirtualAdapter {
 				else if (s.isFile() && isVisibleFileInMount(virtualChild, mount)) files.push(virtualChild);
 			}));
 		}
-		return { files, folders };
+		return { files, folders, stats };
 	}
 
 	async read(normalizedPath: string): Promise<string> {

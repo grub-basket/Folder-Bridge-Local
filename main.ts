@@ -9,7 +9,8 @@ import { VirtualAdapter } from './src/VirtualAdapter';
 import { VaultIndex } from './src/VaultIndex';
 import { FileWatcher } from './src/FileWatcher';
 import { KnownEntry, TreeSyncDeps, syncPath, syncTree } from './src/treeSync';
-import { CASE_INSENSITIVE_FS, checkPathAccessible, normalizeForComparison, stripLongPathPrefix, withTimeout } from './src/OSHelpers';
+import { CASE_INSENSITIVE_FS, IS_WINDOWS, checkPathAccessible, normalizeForComparison, stripLongPathPrefix, withTimeout } from './src/OSHelpers';
+import { FastScanHelper } from './src/fastScan';
 import { isVisibleFileInMount } from './src/mountFileFilter';
 import { MountModal } from './src/ui/MountModal';
 import { MountRootDeleteModal } from './src/ui/MountRootDeleteModal';
@@ -77,6 +78,8 @@ export default class FolderBridgePlugin extends Plugin {
 	/** Unreachable mounts whose drive answers but whose folder is gone (moved/renamed). */
 	readonly missing = new Set<string>();
 	private unloaded = false;
+	/** Windows fast-scan helper (one PowerShell process, started on first use); null when the setting is off. */
+	private fastScan: FastScanHelper | null = null;
 	/** Last mount-tree snapshot read or written (see TreeSnapshot.ts). */
 	private snapshot: SnapshotFile = { version: 1, mounts: {} };
 	private snapshotTimer: number | null = null;
@@ -108,6 +111,7 @@ export default class FolderBridgePlugin extends Plugin {
 		});
 
 		await this.loadSettings();
+		this.updateFastScan();
 		this.applyMountState();
 		this.installVirtualAdapter();
 		this.hookStartupRestore();
@@ -132,6 +136,8 @@ export default class FolderBridgePlugin extends Plugin {
 		if (this.snapshotTimer !== null) window.clearTimeout(this.snapshotTimer);
 		if (this.snapshotDirty) void this.saveSnapshot();
 		this.unloaded = true;
+		this.fastScan?.dispose();
+		this.fastScan = null;
 		this.watcher?.stopAll();
 		// Turned off by the user (Obsidian removes the id from its enabled list
 		// first): take the mounted entries out of the vault, or edits to them
@@ -198,6 +204,17 @@ export default class FolderBridgePlugin extends Plugin {
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
+	}
+
+	/** Start or stop the Windows fast-scan helper to match the setting. */
+	updateFastScan(): void {
+		const want = IS_WINDOWS && this.settings.fastScanWindows === true && !this.unloaded;
+		if (want && !this.fastScan) {
+			this.fastScan = new FastScanHelper();
+		} else if (!want && this.fastScan) {
+			this.fastScan.dispose(); // kills the PowerShell process
+			this.fastScan = null;
+		}
 	}
 
 	/** Push the mount list into the path mapper, allowlist and ignore matcher. */
@@ -552,8 +569,11 @@ export default class FolderBridgePlugin extends Plugin {
 		const listings = new Map<string, Promise<Set<string>>>();
 		const changed = () => this.scheduleSnapshotSave(60_000);
 		const caseInsensitive = CASE_INSENSITIVE_FS;
+		const fastScan = this.fastScan;
 		return {
 			list: path => adapter.listMounted(path),
+			// One directory query per folder instead of one stat per file.
+			listWithStats: fastScan ? path => adapter.listMountedWithStats(path, fastScan) : undefined,
 			stat: path => adapter.statMounted(path),
 			findCaseTwin: caseInsensitive
 				? path => {
@@ -719,6 +739,8 @@ export default class FolderBridgePlugin extends Plugin {
 		this.updateStatusBar();
 		const notice = initial ? new Notice(`Folder Bridge: Scanning "${this.displayName(mount)}"…`, 0) : null;
 		const started = performance.now();
+		const ioStats = (this.app.vault.adapter as unknown as VirtualAdapter).ioStats;
+		const ioBefore = { ...ioStats };
 		try {
 			const deps = this.makeSyncDeps(mount, token);
 			deps.onProgress = progress => {
@@ -726,7 +748,9 @@ export default class FolderBridgePlugin extends Plugin {
 			};
 			const result = await syncTree(normalizePath(mount.virtualPath), deps, { maxItems: mount.maxFiles ?? 0 });
 			const ms = Math.round(performance.now() - started);
-			logger.debug(`Synced "${mount.virtualPath}" in ${ms} ms`, result);
+			// I/O done during this scan (other mounts' work overlapping it is included).
+			const io = { lists: ioStats.lists - ioBefore.lists, fastLists: ioStats.fastLists - ioBefore.fastLists, stats: ioStats.stats - ioBefore.stats };
+			logger.debug(`Synced "${mount.virtualPath}" in ${ms} ms`, result, io);
 			if (!this.isCurrent(mount.id, token)) return;
 			if (!result.aborted && result.failedFolders.length === 0) this.lastScan.set(mount.id, { ms, scanned: result.scanned, at: Date.now() });
 			if (result.limitHit) {

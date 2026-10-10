@@ -58,6 +58,8 @@ export interface FolderBridgeSettings {
 	/** "Suggest mounts from Bases": where it last looked, and the share folder it used. */
 	lastBaseScanSource?: 'vault' | 'disk';
 	lastBaseScanRoot?: string;
+	/** Windows only: list folders with sizes and dates through a read-only PowerShell helper (see fastScan.ts). Off by default. */
+	fastScanWindows?: boolean;
 }
 
 export const DEFAULT_SETTINGS: FolderBridgeSettings = {
@@ -67,6 +69,7 @@ export const DEFAULT_SETTINGS: FolderBridgeSettings = {
 	conflictMode: 'merge',
 	// Names starting with "." (.git, .DS_Store, …) are always hidden.
 	globalIgnorePatterns: ['Thumbs.db', 'desktop.ini', '~$*', '$RECYCLE.BIN', 'System Volume Information'],
+	fastScanWindows: false,
 };
 
 /** The stat shape Obsidian's DataAdapter returns. */

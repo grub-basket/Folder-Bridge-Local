@@ -47,6 +47,7 @@ Settings for every mount:
 - **Ignore in every mount:** defaults hide `Thumbs.db`, `desktop.ini`, Office lock files (`~$…`) and Recycle Bin folders. Names starting with a dot (`.git`, `.ssh`) are always hidden, as in a normal vault.
 - **When a mount folder is deleted in Obsidian:** ask first, or unmount without asking. Either way it only unmounts. You can also right-click a mount's folder and choose **Unmount…**.
 - **When a note changed on the drive while you edit it:** merge both versions (default), keep their version as a copy, or save yours and discard theirs. See "Editing together" below.
+- **Fast scan on Windows (uses PowerShell):** off by default. Every launch re-checks each mount, and normally that means asking the drive about every file one by one. With this on, one read-only PowerShell process in the background reads sizes and dates for a whole folder at once, which saves a network round trip per file. If it fails or stops answering, scans fall back to the normal method.
 
 Always hidden, whatever the settings: program and shortcut files (`.exe`, `.bat`, `.cmd`, `.lnk`, `.url`, `.ps1`, `.vbs`, `.js`, `.msi`, …), so a file someone drops on the share can't be launched from a note.
 
