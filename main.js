@@ -48,7 +48,8 @@ var DEFAULT_SETTINGS = {
   showStatusBar: true,
   conflictMode: "merge",
   // Names starting with "." (.git, .DS_Store, …) are always hidden.
-  globalIgnorePatterns: ["Thumbs.db", "desktop.ini", "~$*", "$RECYCLE.BIN", "System Volume Information"]
+  globalIgnorePatterns: ["Thumbs.db", "desktop.ini", "~$*", "$RECYCLE.BIN", "System Volume Information"],
+  fastScanWindows: false
 };
 
 // src/PathMapper.ts
@@ -233,8 +234,20 @@ async function isCloudPlaceholder(realPath) {
     return false;
   }
 }
+function realPathToFileUrl(realPath) {
+  const plain = stripLongPathPrefix(realPath);
+  const href = (0, import_url.pathToFileURL)(plain).href;
+  if (IS_WINDOWS && isUNCPath(plain) && href.startsWith("file:///")) {
+    return "file://" + plain.slice(2).split(/[\\/]/)[0] + href.substring(7);
+  }
+  return href;
+}
+function realPathToExternalUrl(realPath) {
+  const href = realPathToFileUrl(realPath);
+  return IS_WINDOWS ? href.replace(/^file:\/\/localhost\//i, "file://127.0.0.1/") : href;
+}
 function realPathToResourceUrl(resourcePathPrefix, realPath, mtime) {
-  let href = (0, import_url.pathToFileURL)(stripLongPathPrefix(realPath)).href;
+  let href = realPathToFileUrl(realPath);
   if (href.startsWith("file:///")) href = href.substring(8);
   else if (href.startsWith("file://")) href = "%5C%5C" + href.substring(7);
   return `${resourcePathPrefix}${href}?${mtime || Date.now()}`;
@@ -538,7 +551,6 @@ var IgnoreMatcher = class {
 var import_obsidian4 = require("obsidian");
 var fs2 = __toESM(require("fs"));
 var path4 = __toESM(require("path"));
-var import_url2 = require("url");
 
 // node_modules/.pnpm/node-diff3@3.2.1/node_modules/node-diff3/dist/diff3.mjs
 function LCS(buffer1, buffer2) {
@@ -1009,7 +1021,7 @@ var VirtualAdapter = class {
     /** "<mount id>:<reason>" pairs whose blocked-write notice was shown. */
     this.blockedNoticed = /* @__PURE__ */ new Set();
     /** Diagnostics: how much mounted I/O this session did. */
-    this.ioStats = { reads: 0, lists: 0, stats: 0, writes: 0 };
+    this.ioStats = { reads: 0, lists: 0, stats: 0, writes: 0, fastLists: 0 };
     /** Mounts where a safety copy could not be made (warned once). */
     this.backupWarned = /* @__PURE__ */ new Set();
     /** How each text file read so far is stored (line endings, BOM, encoding). */
@@ -1176,7 +1188,7 @@ var VirtualAdapter = class {
     const mount = this.pathMapper.getMountForPath(normalizedPath);
     if (mount) {
       if (!isVisibleFileInMount(normalizedPath, mount) || this.isPathIgnored(normalizedPath, mount)) return "";
-      return (0, import_url2.pathToFileURL)(this.pathMapper.toRealPath(normalizedPath, mount)).toString();
+      return realPathToExternalUrl(this.pathMapper.toRealPath(normalizedPath, mount));
     }
     return this.orig().getFilePath?.(normalizedPath) ?? normalizedPath;
   }
@@ -1263,18 +1275,56 @@ var VirtualAdapter = class {
     const mount = this.pathMapper.getMountForPath(normalizedPath);
     if (!mount) throw new Error(`Folder Bridge: "${normalizedPath}" is not in a mount.`);
     if (this.isPathIgnored(normalizedPath, mount)) return { files: [], folders: [] };
-    return this.listRealDirectory(this.toReal(normalizedPath, mount), (0, import_obsidian4.normalizePath)(normalizedPath), mount);
+    const { files, folders } = await this.listRealDirectory(this.toReal(normalizedPath, mount), (0, import_obsidian4.normalizePath)(normalizedPath), mount);
+    return { files, folders };
   }
-  async listRealDirectory(realDirPath, virtualParentPath, mount) {
+  /**
+   * listMounted, plus the stat of each plain file, from ONE directory query
+   * through the fast-scan helper (Windows). Exactly the same filters apply.
+   * When the helper fails in any way this falls back to listMounted (files
+   * then have no stat, and the caller stats them), so it throws exactly
+   * when listMounted would.
+   */
+  async listMountedWithStats(normalizedPath, lister) {
+    const mount = this.pathMapper.getMountForPath(normalizedPath);
+    if (!mount) throw new Error(`Folder Bridge: "${normalizedPath}" is not in a mount.`);
+    if (this.isPathIgnored(normalizedPath, mount)) return { files: [], folders: [] };
+    const realDirPath = this.toReal(normalizedPath, mount);
+    let raw;
+    try {
+      raw = await lister.list(realDirPath);
+      this.ioStats.fastLists++;
+    } catch (e) {
+      logger.debug(`Fast scan fell back to fs for "${normalizedPath}":`, e);
+    }
+    const { files, folders, stats } = await this.listRealDirectory(realDirPath, (0, import_obsidian4.normalizePath)(normalizedPath), mount, raw);
+    return { files: files.map((p) => ({ path: p, stat: stats.get(p) })), folders };
+  }
+  /**
+   * List one real folder and apply the mount's rules. `raw` comes from the
+   * fast-scan helper; without it the folder is read with fs.readdir. Both
+   * are typed the same way (see kindFromAttributes), then share every filter.
+   */
+  async listRealDirectory(realDirPath, virtualParentPath, mount, raw) {
     const files = [];
     const folders = [];
+    const stats = /* @__PURE__ */ new Map();
     const parentRel = this.pathMapper.getMountRelativePath(virtualParentPath, mount) ?? "";
     let entries;
-    this.ioStats.lists++;
-    try {
-      entries = await fs2.promises.readdir(realDirPath, { withFileTypes: true });
-    } catch (e) {
-      throw new Error(`Folder Bridge: Cannot list "${stripLongPathPrefix(realDirPath)}": ${translateFsError(e, "list")}`);
+    if (raw) {
+      entries = raw.map((e) => ({ name: e.name, kind: e.kind, raw: e }));
+    } else {
+      this.ioStats.lists++;
+      let dirents;
+      try {
+        dirents = await fs2.promises.readdir(realDirPath, { withFileTypes: true });
+      } catch (e) {
+        throw new Error(`Folder Bridge: Cannot list "${stripLongPathPrefix(realDirPath)}": ${translateFsError(e, "list")}`);
+      }
+      entries = dirents.map((d) => ({
+        name: d.name,
+        kind: d.isDirectory() ? "folder" : d.isFile() ? "file" : d.isSymbolicLink() || !(d.isFIFO() || d.isSocket() || d.isBlockDevice() || d.isCharacterDevice()) ? "link" : "other"
+      }));
     }
     const links = [];
     for (const entry of entries) {
@@ -1282,25 +1332,31 @@ var VirtualAdapter = class {
       if (this.ignore.isIgnored(entry.name, mount, entryRel)) continue;
       if ((0, import_obsidian4.normalizePath)(entry.name) !== entry.name || invalidWindowsNameReason(entry.name)) continue;
       const virtualChild = `${virtualParentPath}/${entry.name}`;
-      if (entry.isDirectory()) folders.push(virtualChild);
-      else if (entry.isFile()) {
-        if (isVisibleFileInMount(virtualChild, mount)) files.push(virtualChild);
-      } else if (entry.isSymbolicLink() || !(entry.isFIFO() || entry.isSocket() || entry.isBlockDevice() || entry.isCharacterDevice())) {
-        links.push({ entry, virtualChild });
+      if (entry.kind === "folder") folders.push(virtualChild);
+      else if (entry.kind === "file") {
+        if (!isVisibleFileInMount(virtualChild, mount)) continue;
+        files.push(virtualChild);
+        if (entry.raw && entry.raw.ctime !== 0) {
+          stats.set(virtualChild, { type: "file", ctime: entry.raw.ctime, mtime: entry.raw.mtime, size: entry.raw.size });
+        }
+      } else if (entry.kind === "link") {
+        links.push({ name: entry.name, virtualChild });
       }
     }
     const parentReal = stripLongPathPrefix(realDirPath);
+    const toMountForm = links.length > 0 ? await this.resolvedToMountForm(mount) : (p) => p;
     for (let i = 0; i < links.length; i += 8) {
-      await Promise.all(links.slice(i, i + 8).map(async ({ entry, virtualChild }) => {
-        const linkPath = path4.join(realDirPath, entry.name);
+      await Promise.all(links.slice(i, i + 8).map(async ({ name, virtualChild }) => {
+        const linkPath = path4.join(realDirPath, name);
         let s;
         let target;
         try {
           [s, target] = await Promise.all([fs2.promises.stat(linkPath), fs2.promises.realpath(linkPath)]);
         } catch (e) {
           if (isMissing(e) || e.code === "ELOOP") return;
-          throw new Error(`Folder Bridge: Cannot resolve "${entry.name}": ${translateFsError(e, "stat")}`);
+          throw new Error(`Folder Bridge: Cannot resolve "${name}": ${translateFsError(e, "stat")}`);
         }
+        target = toMountForm(stripLongPathPrefix(target));
         const rel = path4.relative(target, parentReal);
         const isAncestor = rel === "" || !rel.startsWith("..") && !path4.isAbsolute(rel);
         if (!this.security.isAllowed(target) || isAncestor) return;
@@ -1308,7 +1364,27 @@ var VirtualAdapter = class {
         else if (s.isFile() && isVisibleFileInMount(virtualChild, mount)) files.push(virtualChild);
       }));
     }
-    return { files, folders };
+    return { files, folders, stats };
+  }
+  /**
+   * realpath answers in the folder's resolved form: on a mapped drive
+   * Y:\x comes back as \\server\share\x, through a linked folder as its
+   * target. Map such results back into the mount's own form, so the
+   * allowlist and the loop check compare like with like.
+   */
+  async resolvedToMountForm(mount) {
+    const root = stripLongPathPrefix(this.pathMapper.getEffectiveRealPath(mount));
+    let resolvedRoot;
+    try {
+      resolvedRoot = stripLongPathPrefix(await fs2.promises.realpath(ensureLongPathPrefix(root)));
+    } catch {
+      return (p) => p;
+    }
+    if (path4.relative(resolvedRoot, root) === "") return (p) => p;
+    return (p) => {
+      const rel = path4.relative(resolvedRoot, p);
+      return rel === "" || !rel.startsWith("..") && !path4.isAbsolute(rel) ? path4.join(root, rel) : p;
+    };
   }
   async read(normalizedPath) {
     const mount = this.pathMapper.getMountForPath(normalizedPath);
@@ -2223,8 +2299,15 @@ async function syncTree(rootFolder, deps, options = {}) {
   const queue = [{ folder: rootFolder, depth: 0 }];
   const syncFolder = async (folder, depth) => {
     let listing;
+    let listedStats = [];
     try {
-      listing = await deps.list(folder);
+      if (deps.listWithStats) {
+        const withStats = await deps.listWithStats(folder);
+        listing = { files: withStats.files.map((f) => f.path), folders: withStats.folders };
+        listedStats = withStats.files.map((f) => f.stat);
+      } else {
+        listing = await deps.list(folder);
+      }
       ok();
     } catch {
       fail();
@@ -2261,7 +2344,10 @@ async function syncTree(rootFolder, deps, options = {}) {
       if (depth + 1 < MAX_DEPTH) queue.push({ folder: sub, depth: depth + 1 });
       await tick();
     }
-    const stats = await Promise.all(listing.files.map((f) => statSafe(f)));
+    const stats = await Promise.all(listing.files.map((f, i) => {
+      const listed = listedStats[i];
+      return listed ? Promise.resolve(listed) : statSafe(f);
+    }));
     if (!alive()) return;
     for (let i = 0; i < listing.files.length; i++) {
       const file = listing.files[i];
@@ -2339,6 +2425,309 @@ async function syncPath(path7, deps, options = {}, preStat) {
   deps.addFolder(path7);
   await syncTree(path7, deps, options);
 }
+
+// src/batchStat.ts
+async function statBatch(paths, deps, options = {}) {
+  const sameFolderMin = options.sameFolderMin ?? 8;
+  const concurrency = Math.max(1, options.concurrency ?? 6);
+  const stats = /* @__PURE__ */ new Map();
+  if (deps.listWithStats) {
+    const byFolder = /* @__PURE__ */ new Map();
+    for (const p of paths) {
+      const folder = p.slice(0, p.lastIndexOf("/"));
+      const list = byFolder.get(folder);
+      if (list) list.push(p);
+      else byFolder.set(folder, [p]);
+    }
+    for (const [folder, children] of byFolder) {
+      if (children.length < sameFolderMin) continue;
+      if (!deps.shouldContinue()) return null;
+      try {
+        const listing = await deps.listWithStats(folder);
+        const listed = new Map(listing.files.map((f) => [f.path, f.stat]));
+        for (const child of children) {
+          const s = listed.get(child);
+          if (s) stats.set(child, s);
+        }
+      } catch {
+      }
+    }
+  }
+  const rest = paths.filter((p) => !stats.has(p));
+  let next = 0;
+  let abandoned = false;
+  const worker = async () => {
+    while (next < rest.length) {
+      if (!deps.shouldContinue()) {
+        abandoned = true;
+        return;
+      }
+      const p = rest[next++];
+      try {
+        stats.set(p, await deps.stat(p));
+      } catch {
+        stats.set(p, "error");
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, rest.length) }, worker));
+  return abandoned ? null : stats;
+}
+
+// src/fastScan.ts
+var import_child_process = require("child_process");
+var UNIX_EPOCH_AS_FILETIME = BigInt("116444736000000000");
+var FILETIME_PER_SECOND = BigInt(1e7);
+var NS_PER_SECOND = BigInt(1e9);
+function fileTimeToMs(fileTime) {
+  const t = BigInt(fileTime) - UNIX_EPOCH_AS_FILETIME;
+  let sec = t / FILETIME_PER_SECOND;
+  let nsec = (t - sec * FILETIME_PER_SECOND) * BigInt(100);
+  if (nsec < BigInt(0)) {
+    sec -= BigInt(1);
+    nsec += NS_PER_SECOND;
+  }
+  return Math.round(Number(sec) * 1e3 + Number(nsec) / 1e6);
+}
+var FILE_ATTRIBUTE_DIRECTORY = 16;
+var FILE_ATTRIBUTE_DEVICE = 64;
+var FILE_ATTRIBUTE_REPARSE_POINT = 1024;
+function kindFromAttributes(attributes) {
+  if (attributes & FILE_ATTRIBUTE_DEVICE) return "other";
+  if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) return "link";
+  if (attributes & FILE_ATTRIBUTE_DIRECTORY) return "folder";
+  return "file";
+}
+function encodeRequest(id, realDirPath) {
+  return `${id} ${Buffer.from(realDirPath, "utf16le").toString("base64")}
+`;
+}
+function parseLine(line) {
+  if (!line.startsWith('{"fbl":1,"id":')) return null;
+  const msg = JSON.parse(line);
+  if (typeof msg.id !== "number" || !Number.isInteger(msg.id)) throw new Error("Fast scan: response without id");
+  if (msg.ok === false) {
+    return {
+      id: msg.id,
+      ok: false,
+      code: typeof msg.code === "string" ? msg.code : "EIO",
+      error: typeof msg.error === "string" ? msg.error : "unknown error"
+    };
+  }
+  if (msg.ok !== true || !Array.isArray(msg.e)) throw new Error("Fast scan: malformed response");
+  const entries = msg.e.map((row) => {
+    if (!Array.isArray(row) || row.length !== 5) throw new Error("Fast scan: malformed entry");
+    const [name, attributes, size, mtime, ctime] = row;
+    if (typeof name !== "string" || name === "" || typeof attributes !== "number" || typeof size !== "number" || typeof mtime !== "string" || typeof ctime !== "string" || !/^\d+$/.test(mtime) || !/^\d+$/.test(ctime)) {
+      throw new Error("Fast scan: malformed entry");
+    }
+    return { name, kind: kindFromAttributes(attributes), size, mtime: fileTimeToMs(mtime), ctime: fileTimeToMs(ctime) };
+  });
+  return { id: msg.id, ok: true, entries };
+}
+var HELPER_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$ascii = New-Object Text.ASCIIEncoding
+$reader = New-Object IO.StreamReader([Console]::OpenStandardInput(), $ascii)
+$writer = New-Object IO.StreamWriter([Console]::OpenStandardOutput(), $ascii)
+$special = New-Object Text.RegularExpressions.Regex '[^\x20\x21\x23-\x5B\x5D-\x7E]'
+$escape = [Text.RegularExpressions.MatchEvaluator] { param($m) '\u{0:x4}' -f [int]$m.Value[0] }
+function J([string]$s) { '"' + $special.Replace($s, $escape) + '"' }
+$writer.WriteLine('{"fbl":1,"ready":true}'); $writer.Flush()
+while ($null -ne ($line = $reader.ReadLine())) {
+	$parts = $line.Split(' ')
+	if ($parts.Count -ne 2 -or $parts[0] -notmatch '^\d+$') { continue }
+	$id = $parts[0]
+	try {
+		$dir = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($parts[1]))
+		$sb = New-Object Text.StringBuilder
+		[void]$sb.Append('{"fbl":1,"id":').Append($id).Append(',"ok":true,"e":[')
+		$first = $true
+		foreach ($e in (New-Object IO.DirectoryInfo($dir)).EnumerateFileSystemInfos()) {
+			if (-not $first) { [void]$sb.Append(',') }
+			$first = $false
+			$size = 0
+			if ($e -is [IO.FileInfo]) { $size = $e.Length }
+			[void]$sb.Append('[').Append((J $e.Name)).Append(',').Append([int]$e.Attributes).Append(',').Append($size)
+			[void]$sb.Append(',"').Append($e.LastWriteTimeUtc.ToFileTimeUtc()).Append('","').Append($e.CreationTimeUtc.ToFileTimeUtc()).Append('"]')
+		}
+		[void]$sb.Append(']}')
+		$writer.WriteLine($sb.ToString())
+	} catch {
+		$ex = $_.Exception
+		while ($ex.InnerException) { $ex = $ex.InnerException }
+		$code = 'EIO'
+		if ($ex -is [UnauthorizedAccessException] -or $ex -is [Security.SecurityException]) { $code = 'EACCES' }
+		elseif ($ex -is [IO.DirectoryNotFoundException] -or $ex -is [IO.FileNotFoundException]) { $code = 'ENOENT' }
+		$writer.WriteLine('{"fbl":1,"id":' + $id + ',"ok":false,"code":"' + $code + '","error":' + (J $ex.Message) + '}')
+	}
+	$writer.Flush()
+}
+`;
+function spawnPowerShell() {
+  const encoded = Buffer.from(HELPER_SCRIPT, "utf16le").toString("base64");
+  return (0, import_child_process.spawn)("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+}
+var FastScanHelper = class {
+  constructor(options = {}) {
+    this.proc = null;
+    this.stdoutBuffer = "";
+    this.nextId = 1;
+    this.queue = [];
+    this.current = null;
+    this.timer = null;
+    this.failedAt = -Infinity;
+    this.disposed = false;
+    this.timeoutMs = options.timeoutMs ?? 1e4;
+    this.cooldownMs = options.cooldownMs ?? 3e4;
+    this.spawnHelper = options.spawn ?? spawnPowerShell;
+    this.now = options.now ?? Date.now;
+  }
+  list(realDirPath) {
+    if (this.disposed) return Promise.reject(new Error("Fast scan: stopped"));
+    if (this.now() - this.failedAt < this.cooldownMs) return Promise.reject(new Error("Fast scan: cooling down after a failure"));
+    return new Promise((resolve, reject) => {
+      this.queue.push({ id: this.nextId++, realDirPath, resolve, reject });
+      this.pump();
+    });
+  }
+  /** Folders sent or waiting. */
+  get pending() {
+    return this.queue.length + (this.current ? 1 : 0);
+  }
+  /** Kill the helper and fail everything waiting. Call on unload and when the setting is turned off. */
+  dispose() {
+    this.disposed = true;
+    this.stop(new Error("Fast scan: stopped"));
+  }
+  pump() {
+    if (this.current || this.queue.length === 0) return;
+    try {
+      this.ensureProcess();
+    } catch (e) {
+      this.fail(e instanceof Error ? e : new Error(String(e)));
+      return;
+    }
+    const next = this.queue.shift();
+    this.current = next;
+    this.timer = setTimeout(() => this.fail(new Error(`Fast scan: no answer within ${this.timeoutMs} ms for "${next.realDirPath}"`)), this.timeoutMs);
+    this.proc.stdin.write(encodeRequest(next.id, next.realDirPath));
+  }
+  ensureProcess() {
+    if (this.proc) return;
+    const proc = this.spawnHelper();
+    if (!proc.stdin || !proc.stdout) throw new Error("Fast scan: helper has no pipes");
+    this.proc = proc;
+    this.stdoutBuffer = "";
+    proc.stdout.setEncoding("ascii");
+    proc.stdout.on("data", (chunk) => {
+      if (this.proc === proc) this.onData(chunk);
+    });
+    let stderrTail = "";
+    proc.stderr?.on("data", (chunk) => {
+      stderrTail = (stderrTail + String(chunk)).slice(-500);
+    });
+    proc.stdin.on("error", (e) => {
+      if (this.proc === proc) this.fail(e);
+    });
+    proc.on("error", (e) => {
+      if (this.proc === proc) this.fail(e);
+    });
+    proc.on("exit", (code) => {
+      if (this.proc === proc) this.fail(new Error(`Fast scan: helper exited (code ${code}) ${stderrTail.trim()}`));
+    });
+  }
+  onData(chunk) {
+    this.stdoutBuffer += chunk;
+    let nl;
+    while ((nl = this.stdoutBuffer.indexOf("\n")) !== -1) {
+      const line = this.stdoutBuffer.slice(0, nl).replace(/\r$/, "");
+      this.stdoutBuffer = this.stdoutBuffer.slice(nl + 1);
+      let parsed;
+      try {
+        parsed = parseLine(line);
+      } catch (e) {
+        this.fail(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+      if (!parsed) continue;
+      const cur = this.current;
+      if (!cur || parsed.id !== cur.id) {
+        this.fail(new Error(`Fast scan: answer ${parsed.id} does not match request ${cur?.id ?? "(none)"}`));
+        return;
+      }
+      this.clearTimer();
+      this.current = null;
+      if (parsed.ok) cur.resolve(parsed.entries);
+      else {
+        const err = new Error(`Fast scan: ${parsed.error}`);
+        err.code = parsed.code;
+        cur.reject(err);
+      }
+      this.pump();
+    }
+  }
+  /** The helper can no longer be trusted: kill it, fail all requests, cool down. */
+  fail(error) {
+    logger.debug("Fast scan helper failed; using fs for now:", error.message);
+    this.failedAt = this.now();
+    this.stop(error);
+  }
+  stop(error) {
+    this.clearTimer();
+    const proc = this.proc;
+    this.proc = null;
+    if (proc) {
+      try {
+        proc.stdin?.end();
+      } catch {
+      }
+      try {
+        proc.kill();
+      } catch {
+      }
+    }
+    const waiting = this.current ? [this.current, ...this.queue] : this.queue;
+    this.current = null;
+    this.queue = [];
+    for (const p of waiting) p.reject(error);
+  }
+  clearTimer() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+};
+var FastScanPool = class {
+  constructor(size = 3, options = {}) {
+    this.size = size;
+    this.options = options;
+    this.helpers = [];
+    this.disposed = false;
+  }
+  list(realDirPath) {
+    if (this.disposed) return Promise.reject(new Error("Fast scan: stopped"));
+    let pick = this.helpers.reduce((best, h) => !best || h.pending < best.pending ? h : best, null);
+    if ((!pick || pick.pending > 0) && this.helpers.length < Math.max(1, this.size)) {
+      pick = new FastScanHelper(this.options);
+      this.helpers.push(pick);
+    }
+    return pick.list(realDirPath);
+  }
+  /** Number of helpers started so far (diagnostics, tests). */
+  get started() {
+    return this.helpers.length;
+  }
+  /** Kill every helper. Call on unload and when the setting is turned off. */
+  dispose() {
+    this.disposed = true;
+    for (const h of this.helpers) h.dispose();
+    this.helpers = [];
+  }
+};
 
 // src/ui/MountModal.ts
 var import_obsidian7 = require("obsidian");
@@ -2835,6 +3224,14 @@ async function findMoves(vanished, appeared, deps) {
   }
   return moves;
 }
+function pathsInsideNewFolders(paths, newFolders, limit = 200) {
+  const inside = /* @__PURE__ */ new Set();
+  for (const p of paths) {
+    if (newFolders.some((f) => p.startsWith(f + "/"))) inside.add(p);
+    if (inside.size >= limit) break;
+  }
+  return [...inside];
+}
 
 // main.ts
 var os = __toESM(require("os"));
@@ -2874,6 +3271,13 @@ var FolderBridgeSettingTab = class extends import_obsidian10.PluginSettingTab {
       if (v) this.plugin.createStatusBar();
       else this.plugin.removeStatusBar();
     }));
+    if (IS_WINDOWS) {
+      new import_obsidian10.Setting(containerEl).setName("Fast scan on Windows (uses PowerShell)").setDesc("Scans read sizes and dates for a whole folder at once instead of asking for each file, which is much faster on network drives. Runs one read-only PowerShell process in the background. If it fails, scans use the normal method.").addToggle((t) => t.setValue(settings.fastScanWindows ?? false).onChange(async (v) => {
+        settings.fastScanWindows = v;
+        await this.plugin.saveSettings();
+        this.plugin.updateFastScan();
+      }));
+    }
     let pending = settings.globalIgnorePatterns.join("\n");
     new import_obsidian10.Setting(containerEl).setName("Ignore in every mount").setDesc("One per line: a name, a path, or a pattern with *. Applied to all mounts.").addTextArea((t) => {
       t.setValue(pending).onChange((v) => {
@@ -3775,6 +4179,8 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
     /** Unreachable mounts whose drive answers but whose folder is gone (moved/renamed). */
     this.missing = /* @__PURE__ */ new Set();
     this.unloaded = false;
+    /** Windows fast-scan helpers (up to 3 PowerShell processes, started when needed); null when the setting is off. */
+    this.fastScan = null;
     /** Last mount-tree snapshot read or written (see TreeSnapshot.ts). */
     this.snapshot = { version: 1, mounts: {} };
     this.snapshotTimer = null;
@@ -3805,6 +4211,7 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
       }
     });
     await this.loadSettings();
+    this.updateFastScan();
     this.applyMountState();
     this.installVirtualAdapter();
     this.hookStartupRestore();
@@ -3826,6 +4233,8 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
     if (this.snapshotTimer !== null) window.clearTimeout(this.snapshotTimer);
     if (this.snapshotDirty) void this.saveSnapshot();
     this.unloaded = true;
+    this.fastScan?.dispose();
+    this.fastScan = null;
     this.watcher?.stopAll();
     const plugins = this.app.plugins;
     const userDisabled = plugins?.enabledPlugins ? !plugins.enabledPlugins.has(this.manifest.id) : false;
@@ -3879,6 +4288,16 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  /** Start or stop the Windows fast-scan helper to match the setting. */
+  updateFastScan() {
+    const want = IS_WINDOWS && this.settings.fastScanWindows === true && !this.unloaded;
+    if (want && !this.fastScan) {
+      this.fastScan = new FastScanPool();
+    } else if (!want && this.fastScan) {
+      this.fastScan.dispose();
+      this.fastScan = null;
+    }
   }
   /** Push the mount list into the path mapper, allowlist and ignore matcher. */
   applyMountState() {
@@ -4052,6 +4471,7 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
     const internal = this.app.internalPlugins;
     const sync = internal?.getPluginById?.("sync") ?? internal?.plugins?.sync;
     if (!sync?.enabled) return null;
+    if (sync.instance && "vaultId" in sync.instance && !sync.instance.vaultId) return null;
     const ignored = sync.instance?.filter?.ignoreFolders;
     const folder = (0, import_obsidian14.normalizePath)(mount.virtualPath);
     if (Array.isArray(ignored) && ignored.some((f) => typeof f === "string" && (folder === (0, import_obsidian14.normalizePath)(f) || folder.startsWith((0, import_obsidian14.normalizePath)(f) + "/")))) return null;
@@ -4199,8 +4619,11 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
     const listings = /* @__PURE__ */ new Map();
     const changed = () => this.scheduleSnapshotSave(6e4);
     const caseInsensitive = CASE_INSENSITIVE_FS;
+    const fastScan = this.fastScan;
     return {
       list: (path7) => adapter.listMounted(path7),
+      // One directory query per folder instead of one stat per file.
+      listWithStats: fastScan ? (path7) => adapter.listMountedWithStats(path7, fastScan) : void 0,
       stat: (path7) => adapter.statMounted(path7),
       findCaseTwin: caseInsensitive ? (path7) => {
         const parent = this.index.get(path7.slice(0, path7.lastIndexOf("/")));
@@ -4356,6 +4779,8 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
     this.updateStatusBar();
     const notice = initial ? new import_obsidian14.Notice(`Folder Bridge: Scanning "${this.displayName(mount)}"\u2026`, 0) : null;
     const started = performance.now();
+    const ioStats = this.app.vault.adapter.ioStats;
+    const ioBefore = { ...ioStats };
     try {
       const deps = this.makeSyncDeps(mount, token);
       deps.onProgress = (progress) => {
@@ -4363,7 +4788,8 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
       };
       const result = await syncTree((0, import_obsidian14.normalizePath)(mount.virtualPath), deps, { maxItems: mount.maxFiles ?? 0 });
       const ms = Math.round(performance.now() - started);
-      logger.debug(`Synced "${mount.virtualPath}" in ${ms} ms`, result);
+      const io = { lists: ioStats.lists - ioBefore.lists, fastLists: ioStats.fastLists - ioBefore.fastLists, stats: ioStats.stats - ioBefore.stats };
+      logger.debug(`Synced "${mount.virtualPath}" in ${ms} ms`, result, io);
       if (!this.isCurrent(mount.id, token)) return;
       if (!result.aborted && result.failedFolders.length === 0) this.lastScan.set(mount.id, { ms, scanned: result.scanned, at: Date.now() });
       if (result.limitHit) {
@@ -4411,22 +4837,27 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
         todo.push(path7);
       }
     }
-    const stats = /* @__PURE__ */ new Map();
+    const stats = await statBatch(todo, deps);
+    if (!stats || !this.isCurrent(mount.id, token)) return;
     const vanished = [];
     const appeared = [];
     for (const path7 of todo) {
-      if (!this.isCurrent(mount.id, token)) return;
-      let stat;
-      try {
-        stat = await deps.stat(path7);
-      } catch {
-        stat = "error";
-      }
-      stats.set(path7, stat);
+      const stat = stats.get(path7) ?? "error";
       const item = this.index.get(path7);
       if (stat === null && item instanceof import_obsidian14.TFile) vanished.push({ path: path7, kind: "file", mtime: item.stat.mtime, size: item.stat.size });
       else if (stat === null && item instanceof import_obsidian14.TFolder) vanished.push({ path: path7, kind: "folder" });
       else if (stat && stat !== "error" && !item) appeared.push({ path: path7, stat });
+    }
+    const newFolders = appeared.filter((a) => a.stat.type === "folder").map((a) => a.path);
+    if (newFolders.length > 0 && vanished.some((v) => v.kind === "file")) {
+      for (const path7 of pathsInsideNewFolders(paths, newFolders)) {
+        if (!this.isCurrent(mount.id, token)) return;
+        try {
+          const stat = await deps.stat(path7);
+          if (stat?.type === "file") appeared.push({ path: path7, stat });
+        } catch {
+        }
+      }
     }
     if (vanished.length > 0 && appeared.length > 0) {
       const adapter = this.app.vault.adapter;
@@ -4442,12 +4873,19 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
       });
       for (const move of moves) {
         if (!this.isCurrent(mount.id, token)) return;
+        this.index.ensureFolder(move.to.slice(0, move.to.lastIndexOf("/")));
         this.index.renameTree(move.from, move.to);
         adapter.pathRenamed(move.from, move.to);
         handled.add(move.from);
         handled.add(move.to);
         if (move.kind === "folder") await syncTree(move.to, deps, { maxItems: mount.maxFiles ?? 0 });
         this.scheduleSnapshotSave(6e4);
+      }
+      for (const folder of newFolders) {
+        if (handled.has(folder) || !moves.some((m) => m.kind === "file" && m.to.startsWith(folder + "/"))) continue;
+        if (!this.isCurrent(mount.id, token)) return;
+        handled.add(folder);
+        await syncTree(folder, deps, { maxItems: mount.maxFiles ?? 0 });
       }
     }
     for (const path7 of todo) {
