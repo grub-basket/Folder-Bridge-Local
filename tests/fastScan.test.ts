@@ -6,7 +6,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import {
-	FastScanHelper, HelperProcess, RawDirEntry, encodeRequest, fileTimeToMs, kindFromAttributes, parseLine, ticksToMs,
+	FastScanHelper, FastScanPool, HelperProcess, RawDirEntry, encodeRequest, fileTimeToMs, kindFromAttributes, parseLine, ticksToMs,
 } from '../src/fastScan';
 
 describe('fast scan timestamps', () => {
@@ -216,6 +216,43 @@ describe('FastScanHelper', () => {
 		await expect(a).rejects.toThrow(/stopped/);
 		await expect(helper.list('C:\\B')).rejects.toThrow(/stopped/);
 		expect(procs[0].killed).toBe(true);
+	});
+});
+
+describe('FastScanPool', () => {
+	const pool = (size: number) => {
+		const procs: FakeProcess[] = [];
+		const p = new FastScanPool(size, { spawn: () => { const f = new FakeProcess(); procs.push(f); return f; } });
+		return { p, procs };
+	};
+
+	it('keeps one helper while folders come one at a time', async () => {
+		const { p, procs } = pool(3);
+		for (const dir of ['C:\\A', 'C:\\B', 'C:\\C']) {
+			const done = p.list(dir);
+			const r = await procs[0].nextRequest();
+			procs[0].answer(r.id);
+			await done;
+		}
+		expect(p.started).toBe(1);
+		p.dispose();
+	});
+
+	it('starts more helpers for folders listed at the same time, up to its size', async () => {
+		const { p, procs } = pool(3);
+		const lists = ['C:\\A', 'C:\\B', 'C:\\C', 'C:\\D'].map(d => p.list(d));
+		expect(p.started).toBe(3);
+		// The 4th folder waits behind one of the three.
+		const first = await Promise.all(procs.map(f => f.nextRequest()));
+		expect(first.map(r => r.path).sort()).toEqual(['C:\\A', 'C:\\B', 'C:\\C']);
+		first.forEach((r, i) => procs[i].answer(r.id));
+		const fourth = await Promise.race(procs.map((f, i) => f.nextRequest().then(r => ({ r, i }))));
+		expect(fourth.r.path).toBe('C:\\D');
+		procs[fourth.i].answer(fourth.r.id);
+		await expect(Promise.all(lists)).resolves.toHaveLength(4);
+		p.dispose();
+		expect(procs.every(f => f.killed)).toBe(true);
+		await expect(p.list('C:\\E')).rejects.toThrow(/stopped/);
 	});
 });
 

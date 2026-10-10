@@ -10,7 +10,7 @@ import { VaultIndex } from './src/VaultIndex';
 import { FileWatcher } from './src/FileWatcher';
 import { KnownEntry, TreeSyncDeps, syncPath, syncTree } from './src/treeSync';
 import { CASE_INSENSITIVE_FS, IS_WINDOWS, checkPathAccessible, normalizeForComparison, stripLongPathPrefix, withTimeout } from './src/OSHelpers';
-import { FastScanHelper } from './src/fastScan';
+import { FastScanPool } from './src/fastScan';
 import { isVisibleFileInMount } from './src/mountFileFilter';
 import { MountModal } from './src/ui/MountModal';
 import { MountRootDeleteModal } from './src/ui/MountRootDeleteModal';
@@ -78,8 +78,8 @@ export default class FolderBridgePlugin extends Plugin {
 	/** Unreachable mounts whose drive answers but whose folder is gone (moved/renamed). */
 	readonly missing = new Set<string>();
 	private unloaded = false;
-	/** Windows fast-scan helper (one PowerShell process, started on first use); null when the setting is off. */
-	private fastScan: FastScanHelper | null = null;
+	/** Windows fast-scan helpers (up to 3 PowerShell processes, started when needed); null when the setting is off. */
+	private fastScan: FastScanPool | null = null;
 	/** Last mount-tree snapshot read or written (see TreeSnapshot.ts). */
 	private snapshot: SnapshotFile = { version: 1, mounts: {} };
 	private snapshotTimer: number | null = null;
@@ -210,9 +210,9 @@ export default class FolderBridgePlugin extends Plugin {
 	updateFastScan(): void {
 		const want = IS_WINDOWS && this.settings.fastScanWindows === true && !this.unloaded;
 		if (want && !this.fastScan) {
-			this.fastScan = new FastScanHelper();
+			this.fastScan = new FastScanPool();
 		} else if (!want && this.fastScan) {
-			this.fastScan.dispose(); // kills the PowerShell process
+			this.fastScan.dispose(); // kills the PowerShell processes
 			this.fastScan = null;
 		}
 	}

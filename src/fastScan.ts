@@ -242,6 +242,11 @@ export class FastScanHelper implements FolderLister {
 		});
 	}
 
+	/** Folders sent or waiting. */
+	get pending(): number {
+		return this.queue.length + (this.current ? 1 : 0);
+	}
+
 	/** Kill the helper and fail everything waiting. Call on unload and when the setting is turned off. */
 	dispose(): void {
 		this.disposed = true;
@@ -334,5 +339,41 @@ export class FastScanHelper implements FolderLister {
 	private clearTimer(): void {
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = null;
+	}
+}
+
+/**
+ * Up to `size` helpers side by side. One helper answers one folder at a
+ * time, while the tree sync lists several folders at once (3 by default),
+ * so a single helper leaves the network idle between folders. Each folder
+ * goes to the least busy helper; another helper is started only when all
+ * running ones are busy, so small mounts keep using one process.
+ */
+export class FastScanPool implements FolderLister {
+	private helpers: FastScanHelper[] = [];
+	private disposed = false;
+
+	constructor(private readonly size = 3, private readonly options: FastScanOptions = {}) { }
+
+	list(realDirPath: string): Promise<RawDirEntry[]> {
+		if (this.disposed) return Promise.reject(new Error('Fast scan: stopped'));
+		let pick = this.helpers.reduce<FastScanHelper | null>((best, h) => (!best || h.pending < best.pending ? h : best), null);
+		if ((!pick || pick.pending > 0) && this.helpers.length < Math.max(1, this.size)) {
+			pick = new FastScanHelper(this.options);
+			this.helpers.push(pick);
+		}
+		return pick!.list(realDirPath);
+	}
+
+	/** Number of helpers started so far (diagnostics, tests). */
+	get started(): number {
+		return this.helpers.length;
+	}
+
+	/** Kill every helper. Call on unload and when the setting is turned off. */
+	dispose(): void {
+		this.disposed = true;
+		for (const h of this.helpers) h.dispose();
+		this.helpers = [];
 	}
 }
