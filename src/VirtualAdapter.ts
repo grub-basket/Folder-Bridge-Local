@@ -479,6 +479,7 @@ export class VirtualAdapter {
 		// (which would loop forever). Errors other than "gone" fail the whole
 		// folder, so a briefly unreachable DFS target is not taken for deleted.
 		const parentReal = stripLongPathPrefix(realDirPath);
+		const toMountForm = links.length > 0 ? await this.resolvedToMountForm(mount) : (p: string) => p;
 		for (let i = 0; i < links.length; i += 8) {
 			await Promise.all(links.slice(i, i + 8).map(async ({ name, virtualChild }) => {
 				const linkPath = path.join(realDirPath, name);
@@ -490,6 +491,7 @@ export class VirtualAdapter {
 					if (isMissing(e) || (e as NodeJS.ErrnoException).code === 'ELOOP') return; // broken or looping link
 					throw new Error(`Folder Bridge: Cannot resolve "${name}": ${translateFsError(e as NodeJS.ErrnoException, 'stat')}`);
 				}
+				target = toMountForm(stripLongPathPrefix(target));
 				const rel = path.relative(target, parentReal);
 				const isAncestor = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 				if (!this.security.isAllowed(target) || isAncestor) return;
@@ -498,6 +500,27 @@ export class VirtualAdapter {
 			}));
 		}
 		return { files, folders, stats };
+	}
+
+	/**
+	 * realpath answers in the folder's resolved form: on a mapped drive
+	 * Y:\x comes back as \\server\share\x, through a linked folder as its
+	 * target. Map such results back into the mount's own form, so the
+	 * allowlist and the loop check compare like with like.
+	 */
+	private async resolvedToMountForm(mount: MountPoint): Promise<(p: string) => string> {
+		const root = stripLongPathPrefix(this.pathMapper.getEffectiveRealPath(mount));
+		let resolvedRoot: string;
+		try {
+			resolvedRoot = stripLongPathPrefix(await fs.promises.realpath(ensureLongPathPrefix(root)));
+		} catch {
+			return p => p; // compare as before; the checks then refuse what they cannot place
+		}
+		if (path.relative(resolvedRoot, root) === '') return p => p;
+		return p => {
+			const rel = path.relative(resolvedRoot, p);
+			return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)) ? path.join(root, rel) : p;
+		};
 	}
 
 	async read(normalizedPath: string): Promise<string> {

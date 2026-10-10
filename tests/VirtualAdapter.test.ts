@@ -112,6 +112,19 @@ describe('VirtualAdapter reads', () => {
 		await expect(adapter.list('Fin/Missing')).resolves.toEqual({ files: [], folders: [] });
 	});
 
+	it('follows a link inside the mount when the mount root is reached through a link (like a mapped drive)', async () => {
+		// realpath answers in the resolved form (Y:\x → \\server\share\x on a
+		// mapped drive); a linked parent folder reproduces that on any OS.
+		const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+		await fs.symlink(path.join(root, 'share'), path.join(root, 'shareLink'), linkType);
+		await fs.symlink(path.join(mountDir, 'Q1'), path.join(mountDir, 'Q1 link'), linkType);
+		await fs.symlink(mountDir, path.join(mountDir, 'Q1', 'loop'), linkType);
+		const { adapter } = make({ realPath: path.join(root, 'shareLink', 'Reports') });
+		expect((await adapter.listMounted('Fin')).folders.sort()).toEqual(['Fin/Q1', 'Fin/Q1 link']);
+		// A link back to an ancestor is still refused, whatever form realpath answers in.
+		expect((await adapter.listMounted('Fin/Q1')).folders).toEqual([]);
+	});
+
 	it('applies the file-type filter', async () => {
 		const { adapter } = make({ visibleFileFilter: 'markdown-only' });
 		expect((await adapter.list('Fin')).files).toEqual([]);
