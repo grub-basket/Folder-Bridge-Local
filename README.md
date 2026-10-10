@@ -78,7 +78,7 @@ This is a merge of saved versions, not live co-editing, so two people typing on 
 
 ## Obsidian Sync and other sync tools
 
-If Obsidian Sync is on, a mount is only activated when its vault folder is in Sync's **Excluded folders**. Otherwise Sync would upload every shared file to the cloud, and could replay deletions from your other devices onto the share. Other sync plugins can't be detected: exclude mounted folders in them too.
+If Obsidian Sync is on and connected to a remote vault, a mount is only activated when its vault folder is in Sync's **Excluded folders**. Otherwise Sync would upload every shared file to the cloud, and could replay deletions from your other devices onto the share. Other sync plugins can't be detected: exclude mounted folders in them too.
 
 ## Things the plugin can't guard against
 

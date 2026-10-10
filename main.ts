@@ -407,10 +407,14 @@ export default class FolderBridgePlugin extends Plugin {
 	 * Returns a reason when blocked, null when fine.
 	 */
 	private syncProblem(mount: MountPoint): string | null {
-		type SyncPlugin = { enabled?: boolean; instance?: { filter?: { ignoreFolders?: unknown } } };
+		type SyncPlugin = { enabled?: boolean; instance?: { vaultId?: unknown; filter?: { ignoreFolders?: unknown } } };
 		const internal = (this.app as unknown as { internalPlugins?: { getPluginById?(id: string): SyncPlugin | null; plugins?: Record<string, SyncPlugin> } }).internalPlugins;
 		const sync = internal?.getPluginById?.('sync') ?? internal?.plugins?.sync;
 		if (!sync?.enabled) return null;
+		// Sync is on by default in new vaults but syncs nothing until it is
+		// connected to a remote vault (vaultId set). If the field is missing
+		// (Obsidian changed), keep checking the excluded folders as before.
+		if (sync.instance && 'vaultId' in sync.instance && !sync.instance.vaultId) return null;
 		const ignored = sync.instance?.filter?.ignoreFolders;
 		const folder = normalizePath(mount.virtualPath);
 		if (Array.isArray(ignored) && ignored.some(f => typeof f === 'string' && (folder === normalizePath(f) || folder.startsWith(normalizePath(f) + '/')))) return null;
