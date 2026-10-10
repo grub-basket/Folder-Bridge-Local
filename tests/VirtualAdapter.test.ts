@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import type { DataAdapter } from 'obsidian';
 import { PathMapper } from '../src/PathMapper';
 import { SecurityManager } from '../src/SecurityManager';
@@ -122,7 +123,7 @@ describe('VirtualAdapter reads', () => {
 		const url = adapter.getResourcePath('Fin/chart.png');
 		expect(url.startsWith('app://test-id/')).toBe(true);
 		expect(url).toMatch(/\/share\/Reports\/chart\.png\?\d+$/);
-		expect(adapter.getFilePath('Fin/chart.png')).toBe('file://' + path.join(mountDir, 'chart.png'));
+		expect(adapter.getFilePath('Fin/chart.png')).toBe(pathToFileURL(path.join(mountDir, 'chart.png')).toString());
 		expect(adapter.getFullPath('Fin/chart.png')).toBe(path.join(mountDir, 'chart.png'));
 	});
 

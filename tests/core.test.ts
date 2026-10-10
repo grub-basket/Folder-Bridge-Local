@@ -10,9 +10,11 @@ import {
 } from '../src/OSHelpers';
 import type { MountPoint } from '../src/types';
 
-const mount = (over: Partial<MountPoint> = {}): MountPoint => ({
+const mountAt = (over: Partial<MountPoint> = {}): MountPoint => ({
 	id: 'm1', virtualPath: 'Finance/Reports', realPath: '/srv/reports', enabled: true, readOnly: false, ...over,
 });
+
+const mount = mountAt;
 
 describe('PathMapper', () => {
 	it('maps virtual paths to real paths and back', () => {
@@ -95,8 +97,14 @@ describe('SecurityManager', () => {
 		const s = new SecurityManager();
 		expect(s.validateLocalPath('C:\\Windows\\System32', 'Path')).toMatch(/protected/);
 		expect(s.validateLocalPath('D:\\Program Files\\x', 'Path')).toMatch(/protected/);
-		expect(s.validateLocalPath('/etc', 'Path')).toMatch(/protected/);
-		expect(s.validateLocalPath('/home/u/.ssh', 'Path')).toMatch(/credentials/);
+		if (process.platform === 'win32') {
+			// POSIX paths are not valid mount paths on Windows.
+			expect(s.validateLocalPath('/etc', 'Path')).toMatch(/drive letter/);
+			expect(s.validateLocalPath('C:\\Users\\u\\.ssh', 'Path')).toMatch(/credentials/);
+		} else {
+			expect(s.validateLocalPath('/etc', 'Path')).toMatch(/protected/);
+			expect(s.validateLocalPath('/home/u/.ssh', 'Path')).toMatch(/credentials/);
+		}
 		expect(s.validateLocalPath('relative/folder', 'Path')).toMatch(/full path/);
 		expect(s.validateLocalPath('\\\\server', 'Path')).toMatch(/share name/);
 		expect(s.validateLocalPath('Z:\\Finance\\Reports', 'Path')).toBeNull();
@@ -105,14 +113,17 @@ describe('SecurityManager', () => {
 
 	it('rejects overlapping or hidden vault folders and mounting the vault into itself', () => {
 		const s = new SecurityManager();
+		// Absolute paths in this platform's form (POSIX paths are invalid on Windows).
+		const abs = (p: string) => process.platform === 'win32' ? 'C:' + p.replace(/\//g, '\\') : p;
+		const mount = (over: Partial<MountPoint> = {}) => mountAt({ realPath: abs('/srv/reports'), ...over });
 		const existing = [mount()];
 		expect(s.validateMount({ ...mount({ virtualPath: 'Finance' }) }, existing)).toMatch(/overlaps/);
 		expect(s.validateMount({ ...mount({ virtualPath: 'Finance/Reports/Sub' }) }, existing)).toMatch(/overlaps/);
 		expect(s.validateMount({ ...mount({ virtualPath: '.hidden' }) }, [])).toMatch(/hidden/);
 		expect(s.validateMount({ ...mount({ virtualPath: 'A/../B' }) }, [])).toMatch(/\.\./);
-		expect(s.validateMount(mount({ realPath: '/vaults/work' }), [], '/vaults/work/inner')).toMatch(/vault/);
-		expect(s.validateMount(mount({ realPath: '/vaults/work/inner/x' }), [], '/vaults/work/inner')).toMatch(/vault/);
-		expect(s.validateMount(mount({ realPath: '/vaults/other' }), [], '/vaults/work')).toBeNull();
+		expect(s.validateMount(mount({ realPath: abs('/vaults/work') }), [], abs('/vaults/work/inner'))).toMatch(/vault/);
+		expect(s.validateMount(mount({ realPath: abs('/vaults/work/inner/x') }), [], abs('/vaults/work/inner'))).toMatch(/vault/);
+		expect(s.validateMount(mount({ realPath: abs('/vaults/other') }), [], abs('/vaults/work'))).toBeNull();
 	});
 
 	it('warns when two mounts expose the same files', () => {
@@ -204,8 +215,13 @@ describe('OSHelpers', () => {
 	});
 
 	it('builds resource URLs the way Obsidian does', () => {
-		expect(realPathToResourceUrl('app://id/', '/srv/sub dir/red #1.png', 123))
-			.toBe('app://id/srv/sub%20dir/red%20%231.png?123');
+		if (process.platform === 'win32') {
+			expect(realPathToResourceUrl('app://id/', 'C:\\srv\\sub dir\\red #1.png', 123))
+				.toBe('app://id/C:/srv/sub%20dir/red%20%231.png?123');
+		} else {
+			expect(realPathToResourceUrl('app://id/', '/srv/sub dir/red #1.png', 123))
+				.toBe('app://id/srv/sub%20dir/red%20%231.png?123');
+		}
 	});
 
 	it('times out slow probes', async () => {
