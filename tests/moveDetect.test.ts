@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findMoves } from '../src/moveDetect';
+import { findMoves, pathsInsideNewFolders } from '../src/moveDetect';
 
 const file = (mtime: number, size: number) => ({ type: 'file' as const, ctime: 0, mtime, size });
 const folder = { type: 'folder' as const, ctime: 0, mtime: 0, size: 0 };
@@ -40,5 +40,22 @@ describe('findMoves', () => {
 			[{ path: 'Fin/Q1', kind: 'folder' }], [{ path: 'Fin/New', stat: folder }],
 			deps({ 'Fin/Q1': ['a.md', 'b.md'] }, { 'Fin/New': ['x.md', 'y.md'] }));
 		expect(moves).toEqual([]);
+	});
+});
+
+describe('pathsInsideNewFolders', () => {
+	it('returns watcher paths inside the new folders, once each, capped', () => {
+		const paths = ['Ops/Archive', 'Ops/Archive/Week 10.md', 'Ops/Weekly/Week 10.md', 'Ops/Archive/Week 10.md', 'Ops/ArchiveX/a.md', 'Ops/Archive/Sub/b.md'];
+		expect(pathsInsideNewFolders(paths, ['Ops/Archive'])).toEqual(['Ops/Archive/Week 10.md', 'Ops/Archive/Sub/b.md']);
+		expect(pathsInsideNewFolders(paths, [])).toEqual([]);
+		expect(pathsInsideNewFolders(paths, ['Ops/Archive'], 1)).toEqual(['Ops/Archive/Week 10.md']);
+	});
+
+	it('lets findMoves pair a note moved into a new folder', async () => {
+		const moves = await findMoves(
+			[{ path: 'Ops/Weekly/Week 10.md', kind: 'file', mtime: 5, size: 10 }],
+			[{ path: 'Ops/Archive', stat: folder }, { path: 'Ops/Archive/Week 10.md', stat: file(5, 10) }],
+			deps({}, { 'Ops/Archive': ['Week 10.md'] }));
+		expect(moves).toEqual([{ from: 'Ops/Weekly/Week 10.md', to: 'Ops/Archive/Week 10.md', kind: 'file' }]);
 	});
 });

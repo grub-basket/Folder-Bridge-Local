@@ -73,3 +73,18 @@ export async function findMoves(vanished: Vanished[], appeared: Appeared[], deps
 	}
 	return moves;
 }
+
+/**
+ * Watcher paths inside folders that appeared in the same batch. A note moved
+ * into a new folder is reported as "new folder" only (the batch collapses to
+ * the highest unknown ancestor); these paths let findMoves still see the
+ * note itself. Capped: a large folder copied in is not a move to pair.
+ */
+export function pathsInsideNewFolders(paths: readonly string[], newFolders: readonly string[], limit = 200): string[] {
+	const inside = new Set<string>();
+	for (const p of paths) {
+		if (newFolders.some(f => p.startsWith(f + '/'))) inside.add(p);
+		if (inside.size >= limit) break;
+	}
+	return [...inside];
+}

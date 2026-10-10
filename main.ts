@@ -16,7 +16,7 @@ import { MountModal } from './src/ui/MountModal';
 import { MountRootDeleteModal } from './src/ui/MountRootDeleteModal';
 import { ConflictInfo, ConflictModal } from './src/ui/ConflictModal';
 import { mergeText } from './src/textFiles';
-import { Appeared, Vanished, findMoves } from './src/moveDetect';
+import { Appeared, Vanished, findMoves, pathsInsideNewFolders } from './src/moveDetect';
 import { VaultStat } from './src/types';
 import * as os from 'os';
 import { FolderBridgeSettingTab } from './src/ui/SettingsTab';
@@ -815,6 +815,19 @@ export default class FolderBridgePlugin extends Plugin {
 			else if (stat === null && item instanceof TFolder) vanished.push({ path, kind: 'folder' });
 			else if (stat && stat !== 'error' && !item) appeared.push({ path, stat });
 		}
+		// A note moved into a folder that is new as well was collapsed into that
+		// folder above: offer the files reported inside it too, so the move is
+		// still recognized and its open tab kept.
+		const newFolders = appeared.filter(a => a.stat.type === 'folder').map(a => a.path);
+		if (newFolders.length > 0 && vanished.some(v => v.kind === 'file')) {
+			for (const path of pathsInsideNewFolders(paths, newFolders)) {
+				if (!this.isCurrent(mount.id, token)) return;
+				try {
+					const stat = await deps.stat(path);
+					if (stat?.type === 'file') appeared.push({ path, stat });
+				} catch { /* not paired; the folder sync below indexes it */ }
+			}
+		}
 		if (vanished.length > 0 && appeared.length > 0) {
 			const adapter = this.app.vault.adapter as unknown as VirtualAdapter;
 			const moves = await findMoves(vanished, appeared, {
@@ -823,12 +836,21 @@ export default class FolderBridgePlugin extends Plugin {
 			});
 			for (const move of moves) {
 				if (!this.isCurrent(mount.id, token)) return;
+				this.index.ensureFolder(move.to.slice(0, move.to.lastIndexOf('/'))); // the target folder may be new too
 				this.index.renameTree(move.from, move.to);
 				adapter.pathRenamed(move.from, move.to);
 				handled.add(move.from);
 				handled.add(move.to);
 				if (move.kind === 'folder') await syncTree(move.to, deps, { maxItems: mount.maxFiles ?? 0 }); // reconcile contents
 				this.scheduleSnapshotSave(60_000);
+			}
+			// New folders that received a moved note are known now, so the loop
+			// below would skip them: index the rest of their contents here.
+			for (const folder of newFolders) {
+				if (handled.has(folder) || !moves.some(m => m.kind === 'file' && m.to.startsWith(folder + '/'))) continue;
+				if (!this.isCurrent(mount.id, token)) return;
+				handled.add(folder);
+				await syncTree(folder, deps, { maxItems: mount.maxFiles ?? 0 });
 			}
 		}
 
