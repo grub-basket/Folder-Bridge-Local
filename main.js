@@ -244,7 +244,7 @@ function realPathToFileUrl(realPath) {
 }
 function realPathToExternalUrl(realPath) {
   const href = realPathToFileUrl(realPath);
-  return IS_WINDOWS ? href.replace(/^file:\/\/localhost\//i, "file://127.0.0.1/") : href;
+  return IS_WINDOWS && isUNCPath(stripLongPathPrefix(realPath)) ? href.replace(/^file:\/\//, "file://///") : href;
 }
 function realPathToResourceUrl(resourcePathPrefix, realPath, mtime) {
   let href = realPathToFileUrl(realPath);
@@ -1188,9 +1188,18 @@ var VirtualAdapter = class {
     const mount = this.pathMapper.getMountForPath(normalizedPath);
     if (mount) {
       if (!isVisibleFileInMount(normalizedPath, mount) || this.isPathIgnored(normalizedPath, mount)) return "";
-      return realPathToExternalUrl(this.pathMapper.toRealPath(normalizedPath, mount));
+      return realPathToFileUrl(this.pathMapper.toRealPath(normalizedPath, mount));
     }
     return this.orig().getFilePath?.(normalizedPath) ?? normalizedPath;
+  }
+  /**
+   * URL for "Open in default app" on a mounted file (see
+   * realPathToExternalUrl), or null for anything else.
+   */
+  getExternalOpenUrl(normalizedPath) {
+    const mount = this.pathMapper.getMountForPath(normalizedPath);
+    if (!mount || !isVisibleFileInMount(normalizedPath, mount) || this.isPathIgnored(normalizedPath, mount)) return null;
+    return realPathToExternalUrl(this.pathMapper.toRealPath(normalizedPath, mount));
   }
   async exists(normalizedPath, sensitive) {
     if (this.pathMapper.getMountForPath(normalizedPath)) {
@@ -4214,6 +4223,7 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
     this.updateFastScan();
     this.applyMountState();
     this.installVirtualAdapter();
+    this.hookOpenWithDefaultApp();
     this.hookStartupRestore();
     this.settingTab = new FolderBridgeSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
@@ -4323,6 +4333,30 @@ var FolderBridgePlugin = class extends import_obsidian14.Plugin {
   // ------------------------------------------------------------------
   // Adapter installation
   // ------------------------------------------------------------------
+  /**
+   * "Open in default app" for mounted files on a share. Obsidian opens
+   * adapter.getFilePath() through its main process, which turns
+   * file://server/share/x into the relative path server\share\x, so share
+   * files never open. Give it the form it does turn into \\server\share\x
+   * (see realPathToExternalUrl); its own prompts still apply. Everything
+   * else goes to Obsidian unchanged.
+   */
+  hookOpenWithDefaultApp() {
+    const app = this.app;
+    const original = app.openWithDefaultApp;
+    if (typeof original !== "function" || !import_obsidian14.Platform.isDesktopApp) return;
+    app.openWithDefaultApp = async (path7) => {
+      const url = this.app.vault.adapter.getExternalOpenUrl?.(path7);
+      if (url && url !== this.app.vault.adapter.getFilePath(path7)) {
+        window.open(url, "_external");
+        return;
+      }
+      return original.call(this.app, path7);
+    };
+    this.register(() => {
+      app.openWithDefaultApp = original;
+    });
+  }
   installVirtualAdapter() {
     const vault = this.app.vault;
     const original = vault.adapter;
