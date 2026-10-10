@@ -127,6 +127,20 @@ export async function isCloudPlaceholder(realPath: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 /**
+ * file:// URL of a real path. URLs drop "localhost" as a file host, so
+ * pathToFileURL('\\\\localhost\\share\\x') gives file:///share/x — a local
+ * path. Put the server back so the share is still the one addressed.
+ */
+export function realPathToFileUrl(realPath: string): string {
+	const plain = stripLongPathPrefix(realPath);
+	const href = pathToFileURL(plain).href;
+	if (IS_WINDOWS && isUNCPath(plain) && href.startsWith('file:///')) {
+		return 'file://' + plain.slice(2).split(/[\\/]/)[0] + href.substring(7);
+	}
+	return href;
+}
+
+/**
  * Build the URL Obsidian's renderer uses to display a file (image, PDF,
  * audio, video). This is a copy of Obsidian's own
  * FileSystemAdapter.getResourcePath recipe, so mounted files load through the
@@ -138,7 +152,7 @@ export async function isCloudPlaceholder(realPath: string): Promise<boolean> {
  *   \\server\share\x.png      → app://<id>/%5C%5Cserver/share/x.png?<mtime>
  */
 export function realPathToResourceUrl(resourcePathPrefix: string, realPath: string, mtime?: number): string {
-	let href = pathToFileURL(stripLongPathPrefix(realPath)).href;
+	let href = realPathToFileUrl(realPath);
 	if (href.startsWith('file:///')) href = href.substring(8);
 	else if (href.startsWith('file://')) href = '%5C%5C' + href.substring(7);
 	return `${resourcePathPrefix}${href}?${mtime || Date.now()}`;

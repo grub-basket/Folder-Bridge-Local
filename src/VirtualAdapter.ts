@@ -1,7 +1,6 @@
 import { normalizePath, Notice, DataAdapter, DataWriteOptions, Platform } from 'obsidian';
 import * as fs from 'fs';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
 import { PathMapper } from './PathMapper';
 import { SecurityManager } from './SecurityManager';
 import { IgnoreMatcher } from './IgnoreMatcher';
@@ -12,6 +11,7 @@ import { EXECUTABLE_EXTENSIONS, getLowercaseExtension, isVisibleFileInMount } fr
 import type { FolderLister, RawDirEntry } from './fastScan';
 import {
 	realPathToResourceUrl,
+	realPathToFileUrl,
 	ensureLongPathPrefix,
 	stripLongPathPrefix,
 	invalidWindowsNameReason,
@@ -286,7 +286,7 @@ export class VirtualAdapter {
 		const mount = this.pathMapper.getMountForPath(normalizedPath);
 		if (mount) {
 			if (!isVisibleFileInMount(normalizedPath, mount) || this.isPathIgnored(normalizedPath, mount)) return '';
-			return pathToFileURL(this.pathMapper.toRealPath(normalizedPath, mount)).toString();
+			return realPathToFileUrl(this.pathMapper.toRealPath(normalizedPath, mount));
 		}
 		return (this.orig() as DataAdapter & { getFilePath?(p: string): string }).getFilePath?.(normalizedPath) ?? normalizedPath;
 	}

@@ -6,7 +6,7 @@ import { IgnoreMatcher, wildcardMatch } from '../src/IgnoreMatcher';
 import { isVisibleFileInMount } from '../src/mountFileFilter';
 import {
 	normalizeForComparison, isUNCPath, isUnsupportedWindowsDevicePath,
-	realPathToResourceUrl, stripLongPathPrefix, withTimeout,
+	realPathToResourceUrl, realPathToFileUrl, stripLongPathPrefix, withTimeout,
 } from '../src/OSHelpers';
 import type { MountPoint } from '../src/types';
 
@@ -218,6 +218,15 @@ describe('OSHelpers', () => {
 		if (process.platform === 'win32') {
 			expect(realPathToResourceUrl('app://id/', 'C:\\srv\\sub dir\\red #1.png', 123))
 				.toBe('app://id/C:/srv/sub%20dir/red%20%231.png?123');
+			expect(realPathToResourceUrl('app://id/', '\\\\server\\share\\a b.png', 123))
+				.toBe('app://id/%5C%5Cserver/share/a%20b.png?123');
+			// URLs drop "localhost" as a file host; the share must not turn into a local path.
+			expect(realPathToResourceUrl('app://id/', '\\\\localhost\\share\\a b.png', 123))
+				.toBe('app://id/%5C%5Clocalhost/share/a%20b.png?123');
+			expect(realPathToResourceUrl('app://id/', '\\\\?\\UNC\\localhost\\share\\a.png', 123))
+				.toBe('app://id/%5C%5Clocalhost/share/a.png?123');
+			expect(realPathToFileUrl('\\\\localhost\\share\\a.png')).toBe('file://localhost/share/a.png');
+			expect(realPathToFileUrl('\\\\server\\share\\a.png')).toBe('file://server/share/a.png');
 		} else {
 			expect(realPathToResourceUrl('app://id/', '/srv/sub dir/red #1.png', 123))
 				.toBe('app://id/srv/sub%20dir/red%20%231.png?123');
