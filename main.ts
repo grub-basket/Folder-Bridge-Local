@@ -9,6 +9,7 @@ import { VirtualAdapter } from './src/VirtualAdapter';
 import { VaultIndex } from './src/VaultIndex';
 import { FileWatcher } from './src/FileWatcher';
 import { KnownEntry, TreeSyncDeps, syncPath, syncTree } from './src/treeSync';
+import { statBatch } from './src/batchStat';
 import { CASE_INSENSITIVE_FS, IS_WINDOWS, checkPathAccessible, normalizeForComparison, stripLongPathPrefix, withTimeout } from './src/OSHelpers';
 import { FastScanPool } from './src/fastScan';
 import { isVisibleFileInMount } from './src/mountFileFilter';
@@ -17,7 +18,6 @@ import { MountRootDeleteModal } from './src/ui/MountRootDeleteModal';
 import { ConflictInfo, ConflictModal } from './src/ui/ConflictModal';
 import { mergeText } from './src/textFiles';
 import { Appeared, Vanished, findMoves, pathsInsideNewFolders } from './src/moveDetect';
-import { VaultStat } from './src/types';
 import * as os from 'os';
 import { FolderBridgeSettingTab } from './src/ui/SettingsTab';
 import { InsightsModal } from './src/ui/InsightsModal';
@@ -806,14 +806,12 @@ export default class FolderBridgePlugin extends Plugin {
 		// Stat everything once; pair what vanished with what appeared (a move
 		// or rename made outside Obsidian) and report those as renames, so
 		// open tabs follow the note instead of closing.
-		const stats = new Map<string, VaultStat | null | 'error'>();
+		const stats = await statBatch(todo, deps);
+		if (!stats || !this.isCurrent(mount.id, token)) return;
 		const vanished: Vanished[] = [];
 		const appeared: Appeared[] = [];
 		for (const path of todo) {
-			if (!this.isCurrent(mount.id, token)) return;
-			let stat: VaultStat | null | 'error';
-			try { stat = await deps.stat(path); } catch { stat = 'error'; }
-			stats.set(path, stat);
+			const stat = stats.get(path) ?? 'error';
 			const item = this.index.get(path);
 			if (stat === null && item instanceof TFile) vanished.push({ path, kind: 'file', mtime: item.stat.mtime, size: item.stat.size });
 			else if (stat === null && item instanceof TFolder) vanished.push({ path, kind: 'folder' });
