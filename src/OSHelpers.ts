@@ -141,14 +141,16 @@ export function realPathToFileUrl(realPath: string): string {
 }
 
 /**
- * file:// URL for opening a real path with another program ("Open in default
- * app"). Windows reads a file URL whose host is "localhost" as a path on this
- * PC's own disk, so \\localhost\share\x would not be found; 127.0.0.1 names
- * the same machine and is opened as the share.
+ * URL to give Obsidian's "Open in default app" for a real path. Obsidian's
+ * main process turns a file URL into a path by dropping "file://" (and on
+ * Windows one more leading "/"), so the standard file://server/share/x
+ * becomes the relative path server\share\x and never opens. For UNC paths
+ * this returns file://///server/share/x, which becomes \\server\share\x.
+ * Drive paths keep the standard form (file:///C:/x → C:/x).
  */
 export function realPathToExternalUrl(realPath: string): string {
 	const href = realPathToFileUrl(realPath);
-	return IS_WINDOWS ? href.replace(/^file:\/\/localhost\//i, 'file://127.0.0.1/') : href;
+	return IS_WINDOWS && isUNCPath(stripLongPathPrefix(realPath)) ? href.replace(/^file:\/\//, 'file://///') : href;
 }
 
 /**

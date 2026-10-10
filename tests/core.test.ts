@@ -227,9 +227,10 @@ describe('OSHelpers', () => {
 				.toBe('app://id/%5C%5Clocalhost/share/a.png?123');
 			expect(realPathToFileUrl('\\\\localhost\\share\\a.png')).toBe('file://localhost/share/a.png');
 			expect(realPathToFileUrl('\\\\server\\share\\a.png')).toBe('file://server/share/a.png');
-			// Windows opens file://localhost/... as a local path: other programs get 127.0.0.1.
-			expect(realPathToExternalUrl('\\\\localhost\\share\\a b.png')).toBe('file://127.0.0.1/share/a%20b.png');
-			expect(realPathToExternalUrl('\\\\server\\share\\a.png')).toBe('file://server/share/a.png');
+			// "Open in default app": Obsidian drops "file://" and one "/", so UNC paths need five slashes.
+			expect(realPathToExternalUrl('\\\\localhost\\share\\a b.png')).toBe('file://///localhost/share/a%20b.png');
+			expect(realPathToExternalUrl('\\\\server\\share\\a.png')).toBe('file://///server/share/a.png');
+			expect(realPathToExternalUrl('\\\\?\\UNC\\server\\share\\a.png')).toBe('file://///server/share/a.png');
 			expect(realPathToExternalUrl('Y:\\Finance\\a.png')).toBe('file:///Y:/Finance/a.png');
 		} else {
 			expect(realPathToResourceUrl('app://id/', '/srv/sub dir/red #1.png', 123))

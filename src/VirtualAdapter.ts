@@ -11,6 +11,7 @@ import { EXECUTABLE_EXTENSIONS, getLowercaseExtension, isVisibleFileInMount } fr
 import type { FolderLister, RawDirEntry } from './fastScan';
 import {
 	realPathToResourceUrl,
+	realPathToFileUrl,
 	realPathToExternalUrl,
 	ensureLongPathPrefix,
 	stripLongPathPrefix,
@@ -286,10 +287,19 @@ export class VirtualAdapter {
 		const mount = this.pathMapper.getMountForPath(normalizedPath);
 		if (mount) {
 			if (!isVisibleFileInMount(normalizedPath, mount) || this.isPathIgnored(normalizedPath, mount)) return '';
-			// Obsidian opens this URL for "Open in default app".
-			return realPathToExternalUrl(this.pathMapper.toRealPath(normalizedPath, mount));
+			return realPathToFileUrl(this.pathMapper.toRealPath(normalizedPath, mount));
 		}
 		return (this.orig() as DataAdapter & { getFilePath?(p: string): string }).getFilePath?.(normalizedPath) ?? normalizedPath;
+	}
+
+	/**
+	 * URL for "Open in default app" on a mounted file (see
+	 * realPathToExternalUrl), or null for anything else.
+	 */
+	getExternalOpenUrl(normalizedPath: string): string | null {
+		const mount = this.pathMapper.getMountForPath(normalizedPath);
+		if (!mount || !isVisibleFileInMount(normalizedPath, mount) || this.isPathIgnored(normalizedPath, mount)) return null;
+		return realPathToExternalUrl(this.pathMapper.toRealPath(normalizedPath, mount));
 	}
 
 	async exists(normalizedPath: string, sensitive?: boolean): Promise<boolean> {

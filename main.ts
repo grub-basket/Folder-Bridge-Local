@@ -1,4 +1,4 @@
-import { DataAdapter, FuzzySuggestModal, Notice, Plugin, TFile, TFolder, normalizePath } from 'obsidian';
+import { DataAdapter, FuzzySuggestModal, Notice, Platform, Plugin, TFile, TFolder, normalizePath } from 'obsidian';
 import * as fs from 'fs';
 import * as nodePath from 'path';
 import { DEFAULT_SETTINGS, FolderBridgeSettings, MountPoint } from './src/types';
@@ -114,6 +114,7 @@ export default class FolderBridgePlugin extends Plugin {
 		this.updateFastScan();
 		this.applyMountState();
 		this.installVirtualAdapter();
+		this.hookOpenWithDefaultApp();
 		this.hookStartupRestore();
 
 		this.settingTab = new FolderBridgeSettingTab(this.app, this);
@@ -245,6 +246,29 @@ export default class FolderBridgePlugin extends Plugin {
 	// ------------------------------------------------------------------
 	// Adapter installation
 	// ------------------------------------------------------------------
+
+	/**
+	 * "Open in default app" for mounted files on a share. Obsidian opens
+	 * adapter.getFilePath() through its main process, which turns
+	 * file://server/share/x into the relative path server\share\x, so share
+	 * files never open. Give it the form it does turn into \\server\share\x
+	 * (see realPathToExternalUrl); its own prompts still apply. Everything
+	 * else goes to Obsidian unchanged.
+	 */
+	private hookOpenWithDefaultApp(): void {
+		const app = this.app as unknown as { openWithDefaultApp?: (path: string) => Promise<void> };
+		const original = app.openWithDefaultApp;
+		if (typeof original !== 'function' || !Platform.isDesktopApp) return;
+		app.openWithDefaultApp = async (path: string): Promise<void> => {
+			const url = (this.app.vault.adapter as unknown as VirtualAdapter).getExternalOpenUrl?.(path);
+			if (url && url !== (this.app.vault.adapter as unknown as VirtualAdapter).getFilePath(path)) {
+				window.open(url, '_external');
+				return;
+			}
+			return original.call(this.app, path) as Promise<void>;
+		};
+		this.register(() => { app.openWithDefaultApp = original; });
+	}
 
 	private installVirtualAdapter(): void {
 		const vault = this.app.vault as unknown as { adapter: DataAdapter };
