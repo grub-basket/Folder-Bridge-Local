@@ -6,7 +6,7 @@ import { IgnoreMatcher, wildcardMatch } from '../src/IgnoreMatcher';
 import { isVisibleFileInMount } from '../src/mountFileFilter';
 import {
 	normalizeForComparison, isUNCPath, isUnsupportedWindowsDevicePath,
-	realPathToResourceUrl, realPathToFileUrl, stripLongPathPrefix, withTimeout,
+	realPathToResourceUrl, realPathToFileUrl, realPathToExternalUrl, stripLongPathPrefix, withTimeout,
 } from '../src/OSHelpers';
 import type { MountPoint } from '../src/types';
 
@@ -227,6 +227,10 @@ describe('OSHelpers', () => {
 				.toBe('app://id/%5C%5Clocalhost/share/a.png?123');
 			expect(realPathToFileUrl('\\\\localhost\\share\\a.png')).toBe('file://localhost/share/a.png');
 			expect(realPathToFileUrl('\\\\server\\share\\a.png')).toBe('file://server/share/a.png');
+			// Windows opens file://localhost/... as a local path: other programs get 127.0.0.1.
+			expect(realPathToExternalUrl('\\\\localhost\\share\\a b.png')).toBe('file://127.0.0.1/share/a%20b.png');
+			expect(realPathToExternalUrl('\\\\server\\share\\a.png')).toBe('file://server/share/a.png');
+			expect(realPathToExternalUrl('Y:\\Finance\\a.png')).toBe('file:///Y:/Finance/a.png');
 		} else {
 			expect(realPathToResourceUrl('app://id/', '/srv/sub dir/red #1.png', 123))
 				.toBe('app://id/srv/sub%20dir/red%20%231.png?123');

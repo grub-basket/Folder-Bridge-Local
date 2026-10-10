@@ -141,6 +141,17 @@ export function realPathToFileUrl(realPath: string): string {
 }
 
 /**
+ * file:// URL for opening a real path with another program ("Open in default
+ * app"). Windows reads a file URL whose host is "localhost" as a path on this
+ * PC's own disk, so \\localhost\share\x would not be found; 127.0.0.1 names
+ * the same machine and is opened as the share.
+ */
+export function realPathToExternalUrl(realPath: string): string {
+	const href = realPathToFileUrl(realPath);
+	return IS_WINDOWS ? href.replace(/^file:\/\/localhost\//i, 'file://127.0.0.1/') : href;
+}
+
+/**
  * Build the URL Obsidian's renderer uses to display a file (image, PDF,
  * audio, video). This is a copy of Obsidian's own
  * FileSystemAdapter.getResourcePath recipe, so mounted files load through the
